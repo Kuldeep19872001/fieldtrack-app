@@ -23,6 +23,11 @@
     },
     "android": {
       "package": "com.myapp",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyBsnV9XWBDuZxJQVDO5t-qZFqOSmdNX6vI"
+        }
+      },
       "adaptiveIcon": {
         "backgroundColor": "#0A1628",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -32,9 +37,7 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "ACCESS_BACKGROUND_LOCATION"
       ]
     },
     "web": {
