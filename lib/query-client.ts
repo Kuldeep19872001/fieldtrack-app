@@ -8,10 +8,13 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 export function getApiUrl(): string {
   let host = process.env.EXPO_PUBLIC_DOMAIN;
 
-  if (!host) {
-    throw new Error("EXPO_PUBLIC_DOMAIN is not set");
-  }
+if (!host) {
+    host = process.env.EXPO_PUBLIC_API_URL?.replace(/^https?:\/\//, '');
+}
 
+if (!host) {
+    host = "field-force-navigator--dme46.replit.app";
+}
   let url = new URL(`https://${host}`);
 
   return url.href;
