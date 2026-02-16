@@ -42,7 +42,7 @@ export default function MapScreen() {
                 </Text>
               </View>
               <View style={styles.mapStatsRow}>
-                <Text style={styles.mapStatItem}>{dayRecord.totalDistance} km</Text>
+                <Text style={styles.mapStatItem}>{dayRecord.totalDistance.toFixed(2)} km</Text>
                 <View style={styles.mapStatDivider} />
                 <Text style={styles.mapStatItem}>{dayRecord.visits.length} visits</Text>
                 <View style={styles.mapStatDivider} />

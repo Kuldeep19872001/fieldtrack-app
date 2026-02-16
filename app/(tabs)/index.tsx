@@ -49,11 +49,8 @@ export default function DashboardScreen() {
     }
     setCheckingIn(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    const success = await performCheckIn();
+    await performCheckIn();
     setCheckingIn(false);
-    if (!success) {
-      Alert.alert('Error', 'Could not get your location. Please try again.');
-    }
   };
 
   const handleCheckOut = async () => {
@@ -163,7 +160,7 @@ export default function DashboardScreen() {
         </View>
 
         <View style={styles.statsGrid}>
-          <StatCard icon="navigate-outline" label="Distance" value={`${dayRecord.totalDistance} km`} color={Colors.primary} />
+          <StatCard icon="navigate-outline" label="Distance" value={`${dayRecord.totalDistance.toFixed(2)} km`} color={Colors.primary} />
           <StatCard icon="time-outline" label="Hours" value={formatTime(workingMinutes)} color={Colors.accent} />
           <StatCard icon="location-outline" label="Visits" value={`${dayRecord.visits.length}`} color={Colors.warning} />
           <StatCard icon="call-outline" label="Calls" value={`${dayRecord.calls.length}`} color={Colors.stageConverted} />

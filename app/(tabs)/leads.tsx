@@ -7,9 +7,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as XLSX from 'xlsx';
 import { router } from 'expo-router';
 import Colors from '@/constants/colors';
-import { getLeads, getLeadTypes, addLeadType, createLead, addVisit, addActivity, saveLead, getLeadById, addCallLog } from '@/lib/storage';
+import { getLeads, getLeadTypes, addLeadType, createLead, createLeadsBatch, addVisit, addActivity, saveLead, getLeadById, addCallLog } from '@/lib/storage';
 import { useTracking } from '@/lib/tracking-context';
 import type { Lead, LeadStage } from '@/lib/types';
 
@@ -140,6 +144,9 @@ export default function LeadsScreen() {
 
   const [visitState, setVisitState] = useState<AddVisitState | null>(null);
   const [callLogState, setCallLogState] = useState<{ leadId: string; leadName: string; phone: string; type: 'Outbound' | 'Inbound'; duration: string; notes: string; saving: boolean } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [showImportExport, setShowImportExport] = useState(false);
   const callStartTimeRef = useRef<number | null>(null);
   const appStateRef = useRef(AppState.currentState);
   const pendingCallLeadRef = useRef<{ id: string; name: string } | null>(null);
@@ -221,8 +228,9 @@ export default function LeadsScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowAddLead(false);
       await loadLeads();
-    } catch (e) {
-      Alert.alert('Error', 'Failed to save lead.');
+    } catch (e: any) {
+      console.error('Save lead error:', e);
+      Alert.alert('Error', e.message || 'Failed to save lead. Please check your connection and try again.');
     }
     setSaving(false);
   };
@@ -380,6 +388,159 @@ export default function LeadsScreen() {
     }
   };
 
+  const handleExportExcel = async () => {
+    setExporting(true);
+    try {
+      const exportData = leads.map(l => ({
+        Name: l.name,
+        Mobile: l.mobile || l.phone,
+        Type: l.leadType,
+        Source: l.source,
+        Address: l.address || l.area,
+        Stage: l.stage,
+        'Assigned Staff': l.assignedStaff,
+        'Last Visit Date': l.lastVisitDate || '',
+        Email: l.email,
+        Company: l.company,
+        Notes: l.notes,
+        'Latitude': l.locationLat || '',
+        'Longitude': l.locationLng || '',
+        'Created At': l.createdAt ? new Date(l.createdAt).toLocaleDateString() : '',
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Leads');
+
+      const colWidths = [
+        { wch: 20 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 25 },
+        { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 20 }, { wch: 15 },
+        { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+      ];
+      ws['!cols'] = colWidths;
+
+      const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+
+      if (Platform.OS === 'web') {
+        const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+        const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `leads_${new Date().toISOString().split('T')[0]}.xlsx`;
+        a.click();
+        URL.revokeObjectURL(url);
+        Alert.alert('Exported', `${leads.length} leads exported successfully.`);
+      } else {
+        const fileName = `leads_${new Date().toISOString().split('T')[0]}.xlsx`;
+        const filePath = `${FileSystem.cacheDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(filePath, wbout, { encoding: FileSystem.EncodingType.Base64 });
+
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare) {
+          await Sharing.shareAsync(filePath, {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            dialogTitle: 'Export Leads',
+          });
+        } else {
+          Alert.alert('Exported', `File saved: ${fileName}`);
+        }
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      console.error('Export error:', e);
+      Alert.alert('Export Failed', e.message || 'Could not export leads.');
+    }
+    setExporting(false);
+    setShowImportExport(false);
+  };
+
+  const handleImportExcel = async () => {
+    setImporting(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+          'text/csv',
+        ],
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        setImporting(false);
+        return;
+      }
+
+      const file = result.assets[0];
+      let workbook: XLSX.WorkBook;
+
+      if (Platform.OS === 'web') {
+        const response = await fetch(file.uri);
+        const arrayBuffer = await response.arrayBuffer();
+        workbook = XLSX.read(arrayBuffer, { type: 'array' });
+      } else {
+        const fileContent = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.Base64 });
+        workbook = XLSX.read(fileContent, { type: 'base64' });
+      }
+
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows: any[] = XLSX.utils.sheet_to_json(sheet);
+
+      if (rows.length === 0) {
+        Alert.alert('Empty File', 'The file does not contain any data.');
+        setImporting(false);
+        return;
+      }
+
+      const leadsToImport = rows.map(row => ({
+        name: String(row['Name'] || row['name'] || row['Full Name'] || row['Lead Name'] || '').trim(),
+        mobile: String(row['Mobile'] || row['mobile'] || row['Phone'] || row['phone'] || row['Mobile Number'] || '').trim(),
+        leadType: String(row['Type'] || row['type'] || row['Lead Type'] || row['Category'] || '').trim(),
+        source: String(row['Source'] || row['source'] || '').trim(),
+        address: String(row['Address'] || row['address'] || row['Location'] || '').trim(),
+        assignedStaff: String(row['Assigned Staff'] || row['Staff'] || 'Self').trim(),
+        locationLat: row['Latitude'] ? parseFloat(row['Latitude']) : null,
+        locationLng: row['Longitude'] ? parseFloat(row['Longitude']) : null,
+      })).filter(l => l.name.length > 0);
+
+      if (leadsToImport.length === 0) {
+        Alert.alert('No Valid Data', 'No leads with names were found in the file. Make sure the file has a "Name" column.');
+        setImporting(false);
+        return;
+      }
+
+      Alert.alert(
+        'Import Leads',
+        `Found ${leadsToImport.length} leads to import. Continue?`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => setImporting(false) },
+          {
+            text: 'Import',
+            onPress: async () => {
+              try {
+                await createLeadsBatch(leadsToImport);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert('Success', `${leadsToImport.length} leads imported successfully.`);
+                await loadLeads();
+              } catch (e: any) {
+                console.error('Import save error:', e);
+                Alert.alert('Import Failed', e.message || 'Could not save imported leads.');
+              }
+              setImporting(false);
+              setShowImportExport(false);
+            },
+          },
+        ]
+      );
+    } catch (e: any) {
+      console.error('Import error:', e);
+      Alert.alert('Import Failed', e.message || 'Could not read the file.');
+      setImporting(false);
+    }
+  };
+
   const filtered = leads.filter(l => {
     if (activeFilter !== 'All' && l.stage !== activeFilter) return false;
     if (search) {
@@ -407,16 +568,27 @@ export default function LeadsScreen() {
       <View style={[styles.headerSection, { paddingTop: insets.top + webTop + 16 }]}>
         <View style={styles.titleRow}>
           <Text style={styles.title}>Leads</Text>
-          <Pressable
-            style={({ pressed }) => [styles.addLeadBtn, pressed && { opacity: 0.85 }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              openAddLeadForm();
-            }}
-          >
-            <Ionicons name="add" size={20} color="#fff" />
-            <Text style={styles.addLeadBtnText}>Add Lead</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              style={({ pressed }) => [styles.iconActionBtn, pressed && { opacity: 0.7 }]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowImportExport(true);
+              }}
+            >
+              <Ionicons name="swap-vertical" size={20} color={Colors.primary} />
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.addLeadBtn, pressed && { opacity: 0.85 }]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                openAddLeadForm();
+              }}
+            >
+              <Ionicons name="add" size={20} color="#fff" />
+              <Text style={styles.addLeadBtnText}>Add Lead</Text>
+            </Pressable>
+          </View>
         </View>
         <View style={styles.searchContainer}>
           <Ionicons name="search" size={18} color={Colors.textTertiary} />
@@ -615,6 +787,62 @@ export default function LeadsScreen() {
               )}
               <Text style={styles.saveBtnText}>{visitState?.capturing ? 'Capturing GPS...' : 'Save Visit'}</Text>
             </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      <Modal visible={showImportExport} transparent animationType="slide" onRequestClose={() => setShowImportExport(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={styles.modalDismiss} onPress={() => setShowImportExport(false)} />
+          <View style={[styles.importExportSheet, { paddingBottom: insets.bottom + (Platform.OS === 'web' ? 34 : 16) }]}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Import / Export Leads</Text>
+            <Text style={styles.importExportDesc}>Import leads from Excel or export your current leads</Text>
+
+            <Pressable
+              style={({ pressed }) => [styles.importExportBtn, pressed && { opacity: 0.85 }]}
+              onPress={handleImportExcel}
+              disabled={importing}
+            >
+              <View style={[styles.importExportIconBg, { backgroundColor: Colors.successLight }]}>
+                {importing ? (
+                  <ActivityIndicator size="small" color={Colors.success} />
+                ) : (
+                  <Ionicons name="cloud-upload-outline" size={22} color={Colors.success} />
+                )}
+              </View>
+              <View style={styles.importExportTextCol}>
+                <Text style={styles.importExportBtnTitle}>{importing ? 'Importing...' : 'Import from Excel'}</Text>
+                <Text style={styles.importExportBtnSub}>Upload .xlsx, .xls, or .csv file</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.importExportBtn, pressed && { opacity: 0.85 }]}
+              onPress={handleExportExcel}
+              disabled={exporting || leads.length === 0}
+            >
+              <View style={[styles.importExportIconBg, { backgroundColor: Colors.primaryLight }]}>
+                {exporting ? (
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                ) : (
+                  <Ionicons name="cloud-download-outline" size={22} color={Colors.primary} />
+                )}
+              </View>
+              <View style={styles.importExportTextCol}>
+                <Text style={styles.importExportBtnTitle}>{exporting ? 'Exporting...' : 'Export to Excel'}</Text>
+                <Text style={styles.importExportBtnSub}>{leads.length} leads will be exported</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+            </Pressable>
+
+            <View style={styles.importFormatInfo}>
+              <Ionicons name="information-circle-outline" size={16} color={Colors.textTertiary} />
+              <Text style={styles.importFormatText}>
+                Import file should have columns: Name, Mobile, Type, Source, Address
+              </Text>
+            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -831,4 +1059,25 @@ const styles = StyleSheet.create({
   callTypeTextActive: { color: Colors.primary, fontWeight: '600' as const },
   skipCallBtn: { alignItems: 'center', paddingVertical: 12, marginTop: 4 },
   skipCallText: { fontSize: 14, color: Colors.textTertiary, fontFamily: 'Inter_500Medium' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  iconActionBtn: {
+    width: 40, height: 40, borderRadius: 12, backgroundColor: Colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  importExportSheet: { backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
+  importExportDesc: { fontSize: 13, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginBottom: 20, marginTop: 4 },
+  importExportBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 14,
+    backgroundColor: Colors.surfaceAlt, borderRadius: 14, padding: 16, marginBottom: 10,
+    borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  importExportIconBg: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  importExportTextCol: { flex: 1 },
+  importExportBtnTitle: { fontSize: 15, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold' },
+  importExportBtnSub: { fontSize: 12, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', marginTop: 2 },
+  importFormatInfo: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 10,
+    backgroundColor: Colors.surfaceAlt, borderRadius: 10, padding: 12,
+  },
+  importFormatText: { flex: 1, fontSize: 12, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', lineHeight: 18 },
 });

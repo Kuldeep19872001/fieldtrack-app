@@ -71,7 +71,7 @@ export default function SummaryScreen() {
           <View style={styles.overviewRow}>
             <View style={styles.overviewItem}>
               <Ionicons name="navigate" size={20} color={Colors.accent} />
-              <Text style={styles.overviewValue}>{dayRecord.totalDistance}</Text>
+              <Text style={styles.overviewValue}>{dayRecord.totalDistance.toFixed(2)}</Text>
               <Text style={styles.overviewUnit}>km</Text>
             </View>
             <View style={styles.overviewDivider} />

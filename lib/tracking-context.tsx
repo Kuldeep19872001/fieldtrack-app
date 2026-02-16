@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
 import * as Location from 'expo-location';
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 import {
   getDayRecord, checkIn as storageCheckIn,
   checkOut as storageCheckOut, addRoutePoint, addVisit, addCallLog, addActivity,
@@ -40,8 +40,12 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   const isTracking = isCheckedIn;
 
   const refreshDayRecord = useCallback(async () => {
-    const record = await getDayRecord();
-    setDayRecord(record);
+    try {
+      const record = await getDayRecord();
+      setDayRecord(record);
+    } catch (e: any) {
+      console.error('Refresh day record error:', e.message);
+    }
   }, []);
 
   useEffect(() => {
@@ -69,10 +73,16 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const startLocationTracking = useCallback(async () => {
     try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.warn('Location permission not granted for tracking');
+        return;
+      }
+
       if (Platform.OS === 'web') {
         const webTrack = setInterval(async () => {
           try {
-            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
             const point: LocationPoint = {
               latitude: loc.coords.latitude,
               longitude: loc.coords.longitude,
@@ -105,8 +115,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         }
       );
       locationSubRef.current = sub;
-    } catch (e) {
-      console.error('Location tracking error:', e);
+    } catch (e: any) {
+      console.error('Location tracking error:', e.message);
     }
   }, [refreshDayRecord]);
 
@@ -126,31 +136,83 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const performCheckIn = useCallback(async (): Promise<boolean> => {
     try {
-      let loc;
-      if (Platform.OS === 'web') {
-        loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      } else {
-        loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Location Required', 'Please enable location permissions in your device settings to check in.');
+        return false;
       }
+
+      let loc;
+      try {
+        if (Platform.OS === 'web') {
+          loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        } else {
+          loc = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('High accuracy timeout')), 8000)),
+          ]);
+        }
+      } catch (highAccErr: any) {
+        console.warn('High accuracy failed, trying balanced:', highAccErr.message);
+        try {
+          loc = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Balanced accuracy timeout')), 8000)),
+          ]);
+        } catch (balancedErr: any) {
+          console.error('Balanced accuracy also failed:', balancedErr.message);
+          try {
+            loc = await Promise.race([
+              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Low accuracy timeout')), 10000)),
+            ]);
+          } catch (lowErr: any) {
+            console.error('All location attempts failed:', lowErr.message);
+            Alert.alert('Location Error', 'Could not get your GPS location. Please make sure Location/GPS is turned on in your device settings and try again.');
+            return false;
+          }
+        }
+      }
+
+      if (!loc || !loc.coords) {
+        Alert.alert('Location Error', 'No location data received. Please try again.');
+        return false;
+      }
+
       const point: LocationPoint = {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
         timestamp: loc.timestamp,
       };
+      console.log('Got location for check-in:', point.latitude, point.longitude);
       setCurrentLocation(point);
-      const record = await storageCheckIn(point);
-      setDayRecord(record);
-      return true;
-    } catch (e) {
-      console.error('Check-in error:', e);
+
+      try {
+        const record = await storageCheckIn(point);
+        setDayRecord(record);
+        console.log('Check-in completed successfully');
+        return true;
+      } catch (saveError: any) {
+        console.error('Check-in save error:', saveError.message);
+        Alert.alert('Check-in Failed', 'Got your location but could not save check-in to the server. Error: ' + saveError.message);
+        return false;
+      }
+    } catch (e: any) {
+      console.error('Check-in error:', e.message);
+      Alert.alert('Check-in Error', e.message || 'An unexpected error occurred during check-in.');
       return false;
     }
   }, []);
 
   const performCheckOut = useCallback(async () => {
-    stopLocationTracking();
-    const record = await storageCheckOut();
-    setDayRecord(record);
+    try {
+      stopLocationTracking();
+      const record = await storageCheckOut();
+      setDayRecord(record);
+    } catch (e: any) {
+      console.error('Check-out error:', e.message);
+      Alert.alert('Check-out Error', e.message || 'Could not complete check-out.');
+    }
   }, [stopLocationTracking]);
 
   const logVisit = useCallback(async (leadId: string, leadName: string, type: Visit['type'], notes: string, address: string) => {
@@ -186,11 +248,15 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   }, [refreshDayRecord]);
 
   const updateLeadStage = useCallback(async (leadId: string, newStage: LeadStage) => {
-    const lead = await getLeadById(leadId);
-    if (lead) {
-      lead.stage = newStage;
-      lead.updatedAt = new Date().toISOString();
-      await saveLead(lead);
+    try {
+      const lead = await getLeadById(leadId);
+      if (lead) {
+        lead.stage = newStage;
+        lead.updatedAt = new Date().toISOString();
+        await saveLead(lead);
+      }
+    } catch (e: any) {
+      console.error('Update lead stage error:', e.message);
     }
   }, []);
 

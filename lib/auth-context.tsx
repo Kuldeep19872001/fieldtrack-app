@@ -1,101 +1,123 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiRequest } from './query-client';
+import { supabase, setCachedUserId } from './supabase';
 import type { UserProfile } from './types';
 
 interface AuthContextValue {
   user: UserProfile | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => Promise<{ success: boolean; message?: string }>;
-  register: (username: string, password: string, name: string) => Promise<{ success: boolean; message?: string }>;
+  login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
+  register: (email: string, password: string, name: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-const USER_KEY = '@fieldtrack_user';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  const loadProfile = async (userId: string, email: string) => {
+    setCachedUserId(userId);
+
+    let profileName = email.split('@')[0];
+    let profileRole = 'Field Executive';
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('name, role')
+        .eq('id', userId)
+        .single();
+      if (data) {
+        profileName = data.name || profileName;
+        profileRole = data.role || profileRole;
+      }
+    } catch (e) {
+      console.warn('Profile load failed, using defaults');
+    }
+
+    const profile: UserProfile = {
+      id: userId,
+      username: email,
+      name: profileName,
+      role: profileRole,
+    };
+    setUser(profile);
+    return profile;
+  };
+
   useEffect(() => {
     (async () => {
       try {
-        const res = await apiRequest('GET', '/api/auth/me');
-        const data = await res.json();
-        if (data && data.id) {
-          const profile: UserProfile = {
-            id: String(data.id),
-            username: data.username,
-            name: data.name,
-            role: data.role,
-          };
-          setUser(profile);
-          await AsyncStorage.setItem(USER_KEY, JSON.stringify(profile));
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setCachedUserId(session.user.id);
+          await loadProfile(session.user.id, session.user.email || '');
         }
       } catch (e) {
-        const cached = await AsyncStorage.getItem(USER_KEY);
-        if (cached) {
-          try {
-            setUser(JSON.parse(cached));
-          } catch {}
-        }
+        console.error('Auth init error:', e);
       } finally {
         setIsLoading(false);
       }
     })();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+        setCachedUserId(session.user.id);
+        await loadProfile(session.user.id, session.user.email || '');
+      } else if (event === 'SIGNED_OUT') {
+        setCachedUserId(null);
+        setUser(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const login = async (username: string, password: string): Promise<{ success: boolean; message?: string }> => {
+  const login = async (email: string, password: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      const res = await apiRequest('POST', '/api/auth/login', { username, password });
-      const data = await res.json();
-      const profile: UserProfile = {
-        id: String(data.id),
-        username: data.username,
-        name: data.name,
-        role: data.role,
-      };
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(profile));
-      setUser(profile);
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return { success: false, message: error.message };
+      if (data.user) {
+        setCachedUserId(data.user.id);
+        await loadProfile(data.user.id, data.user.email || '');
+      }
       return { success: true };
     } catch (e: any) {
-      const msg = e.message || 'Login failed';
-      let parsed = msg;
-      try { const j = JSON.parse(msg.replace(/^\d+:\s*/, '')); if (j.message) parsed = j.message; } catch {}
-      if (parsed === msg) { const m = msg.match(/\d+:\s*(.*)/); if (m) parsed = m[1]; }
-      return { success: false, message: parsed };
+      return { success: false, message: e.message || 'Login failed' };
     }
   };
 
-  const register = async (username: string, password: string, name: string): Promise<{ success: boolean; message?: string }> => {
+  const register = async (email: string, password: string, name: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      const res = await apiRequest('POST', '/api/auth/register', { username, password, name });
-      const data = await res.json();
-      const profile: UserProfile = {
-        id: String(data.id),
-        username: data.username,
-        name: data.name,
-        role: data.role,
-      };
-      await AsyncStorage.setItem(USER_KEY, JSON.stringify(profile));
-      setUser(profile);
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name } },
+      });
+      if (error) return { success: false, message: error.message };
+      if (data.user) {
+        setCachedUserId(data.user.id);
+        try {
+          await supabase.from('profiles').upsert({
+            id: data.user.id,
+            name,
+            role: 'Field Executive',
+          });
+        } catch (e) {
+          console.warn('Profile upsert after register failed:', e);
+        }
+        await loadProfile(data.user.id, data.user.email || '');
+      }
       return { success: true };
     } catch (e: any) {
-      const msg = e.message || 'Registration failed';
-      let parsed = msg;
-      try { const j = JSON.parse(msg.replace(/^\d+:\s*/, '')); if (j.message) parsed = j.message; } catch {}
-      if (parsed === msg) { const m = msg.match(/\d+:\s*(.*)/); if (m) parsed = m[1]; }
-      return { success: false, message: parsed };
+      return { success: false, message: e.message || 'Registration failed' };
     }
   };
 
   const logout = async () => {
-    try {
-      await apiRequest('POST', '/api/auth/logout');
-    } catch {}
-    await AsyncStorage.removeItem(USER_KEY);
+    setCachedUserId(null);
+    await supabase.auth.signOut();
     setUser(null);
   };
 

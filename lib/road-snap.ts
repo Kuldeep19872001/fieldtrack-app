@@ -14,7 +14,7 @@ function getCacheKey(points: LocationPoint[]): string {
   if (points.length === 0) return '';
   const first = points[0];
   const last = points[points.length - 1];
-  return `${points.length}_${first.latitude.toFixed(5)}_${first.longitude.toFixed(5)}_${last.latitude.toFixed(5)}_${last.longitude.toFixed(5)}_${Date.now() >> 16}`;
+  return `${points.length}_${first.latitude.toFixed(5)}_${first.longitude.toFixed(5)}_${last.latitude.toFixed(5)}_${last.longitude.toFixed(5)}`;
 }
 
 function samplePoints(points: LocationPoint[], maxPoints: number): LocationPoint[] {

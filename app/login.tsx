@@ -15,7 +15,7 @@ export default function LoginScreen() {
   const insets = useSafeAreaInsets();
   const { login, register } = useAuth();
   const [isRegister, setIsRegister] = useState(false);
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -23,12 +23,16 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
 
   const handleSubmit = async () => {
-    if (!username.trim() || !password.trim()) {
-      setError('Please enter both username and password');
+    if (!email.trim() || !password.trim()) {
+      setError('Please enter both email and password');
       return;
     }
     if (isRegister && !name.trim()) {
       setError('Please enter your full name');
+      return;
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
       return;
     }
     setError('');
@@ -37,9 +41,9 @@ export default function LoginScreen() {
     try {
       let result;
       if (isRegister) {
-        result = await register(username.trim(), password, name.trim());
+        result = await register(email.trim(), password, name.trim());
       } else {
-        result = await login(username.trim(), password);
+        result = await login(email.trim(), password);
       }
       if (result.success) {
         router.replace('/(tabs)');
@@ -91,15 +95,16 @@ export default function LoginScreen() {
           )}
 
           <View style={styles.inputContainer}>
-            <Ionicons name="person-outline" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
+            <Ionicons name="mail-outline" size={20} color={Colors.textTertiary} style={styles.inputIcon} />
             <TextInput
               style={styles.input}
-              placeholder="Username"
+              placeholder="Email"
               placeholderTextColor={Colors.textTertiary}
-              value={username}
-              onChangeText={setUsername}
+              value={email}
+              onChangeText={setEmail}
               autoCapitalize="none"
               autoCorrect={false}
+              keyboardType="email-address"
               returnKeyType="next"
             />
           </View>
