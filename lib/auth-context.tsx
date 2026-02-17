@@ -116,6 +116,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    try {
+      const { data } = await supabase
+        .from('trips')
+        .select('id')
+        .is('end_time', null)
+        .limit(1)
+        .maybeSingle();
+
+      if (data) {
+        throw new Error('ACTIVE_TRIP');
+      }
+    } catch (e: any) {
+      if (e.message === 'ACTIVE_TRIP') {
+        throw e;
+      }
+    }
+
     setCachedUserId(null);
     await supabase.auth.signOut();
     setUser(null);

@@ -158,13 +158,23 @@ export default function LeadDetailScreen() {
       const lat = loc.coords.latitude;
       const lng = loc.coords.longitude;
 
+      let visitAddress = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      try {
+        const geocode = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        if (geocode && geocode.length > 0) {
+          const g = geocode[0];
+          const parts = [g.name, g.street, g.district, g.city, g.region, g.postalCode].filter(Boolean);
+          if (parts.length > 0) visitAddress = parts.join(', ');
+        }
+      } catch (e) { /* use coordinate fallback */ }
+
       await addVisit({
         leadId: lead.id,
         leadName: lead.name,
         type: 'Visit',
         latitude: lat,
         longitude: lng,
-        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        address: visitAddress,
         notes: visitNotes.trim(),
         timestamp: new Date().toISOString(),
         duration: 0,

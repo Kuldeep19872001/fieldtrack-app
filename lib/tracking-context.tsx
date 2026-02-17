@@ -1,12 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef, ReactNode } from 'react';
 import * as Location from 'expo-location';
-import { Platform, Alert } from 'react-native';
+import { Platform, Alert, AppState, AppStateStatus } from 'react-native';
 import {
-  getDayRecord, checkIn as storageCheckIn,
-  checkOut as storageCheckOut, addRoutePoint, addVisit, addCallLog, addActivity,
-  getLeadById, saveLead,
+  getDayRecord, startTrip, endTrip, getActiveTrip,
+  addVisit, addCallLog, addActivity,
+  getLeadById, saveLead, calculateDistance, saveRoutePoints,
 } from './storage';
-import type { DayRecord, LocationPoint, Visit, CallLog, Activity, LeadStage } from './types';
+import { snapToRoads } from './roads-api';
+import { encodePolyline } from './polyline';
+import { startBackgroundTracking, stopBackgroundTracking, getBackgroundPoints, clearBackgroundPoints } from './background-tracking';
+import type { DayRecord, LocationPoint, Visit, CallLog, Activity, LeadStage, Trip } from './types';
+
+const MIN_DISTANCE_METERS = 5;
+const MAX_ACCURACY_METERS = 50;
+const MAX_SPEED_MPS = 140;
+const TRACKING_TIME_INTERVAL = 5000;
+const TRACKING_DISTANCE_INTERVAL = 5;
 
 interface TrackingContextValue {
   dayRecord: DayRecord;
@@ -14,6 +23,7 @@ interface TrackingContextValue {
   isTracking: boolean;
   currentLocation: LocationPoint | null;
   workingMinutes: number;
+  tripPoints: LocationPoint[];
   refreshDayRecord: () => Promise<void>;
   performCheckIn: () => Promise<boolean>;
   performCheckOut: () => Promise<void>;
@@ -23,26 +33,37 @@ interface TrackingContextValue {
   updateLeadStage: (leadId: string, newStage: LeadStage) => Promise<void>;
 }
 
+const emptyDayRecord: DayRecord = {
+  date: new Date().toISOString().split('T')[0],
+  trips: [], activeTrip: null,
+  visits: [], calls: [], activities: [],
+  totalDistance: 0, totalWorkingMinutes: 0,
+};
+
 const TrackingContext = createContext<TrackingContextValue | null>(null);
 
 export function TrackingProvider({ children }: { children: ReactNode }) {
-  const [dayRecord, setDayRecord] = useState<DayRecord>({
-    date: new Date().toISOString().split('T')[0],
-    checkInTime: null, checkOutTime: null, checkInLocation: null,
-    routePoints: [], visits: [], calls: [], activities: [], totalDistance: 0,
-  });
+  const [dayRecord, setDayRecord] = useState<DayRecord>(emptyDayRecord);
   const [currentLocation, setCurrentLocation] = useState<LocationPoint | null>(null);
   const [workingMinutes, setWorkingMinutes] = useState(0);
+  const [tripPoints, setTripPoints] = useState<LocationPoint[]>([]);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeTripRef = useRef<Trip | null>(null);
+  const tripPointsRef = useRef<LocationPoint[]>([]);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const bgTrackingActiveRef = useRef(false);
 
-  const isCheckedIn = !!dayRecord.checkInTime && !dayRecord.checkOutTime;
+  const isCheckedIn = !!dayRecord.activeTrip;
   const isTracking = isCheckedIn;
 
   const refreshDayRecord = useCallback(async () => {
     try {
       const record = await getDayRecord();
       setDayRecord(record);
+      if (record.activeTrip) {
+        activeTripRef.current = record.activeTrip;
+      }
     } catch (e: any) {
       console.error('Refresh day record error:', e.message);
     }
@@ -52,24 +73,125 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     refreshDayRecord();
   }, [refreshDayRecord]);
 
+  const syncBackgroundPoints = useCallback(async () => {
+    if (Platform.OS === 'web') return;
+    try {
+      const bgPoints = await getBackgroundPoints();
+      if (bgPoints.length > 0) {
+        const validPoints: LocationPoint[] = [];
+        for (const bp of bgPoints) {
+          const point: LocationPoint = {
+            latitude: bp.latitude,
+            longitude: bp.longitude,
+            timestamp: bp.timestamp,
+            accuracy: bp.accuracy,
+            speed: bp.speed,
+          };
+          const lastPoint = tripPointsRef.current.length > 0
+            ? tripPointsRef.current[tripPointsRef.current.length - 1]
+            : (validPoints.length > 0 ? validPoints[validPoints.length - 1] : null);
+
+          if (lastPoint) {
+            if (point.accuracy && point.accuracy > MAX_ACCURACY_METERS) continue;
+            const distKm = calculateDistance(lastPoint.latitude, lastPoint.longitude, point.latitude, point.longitude);
+            const distMeters = distKm * 1000;
+            if (distMeters < MIN_DISTANCE_METERS) continue;
+            const timeDiff = (point.timestamp - lastPoint.timestamp) / 1000;
+            if (timeDiff > 0 && (distMeters / timeDiff) > MAX_SPEED_MPS) continue;
+          }
+          validPoints.push(point);
+        }
+
+        if (validPoints.length > 0) {
+          tripPointsRef.current = [...tripPointsRef.current, ...validPoints];
+          setTripPoints([...tripPointsRef.current]);
+          if (validPoints.length > 0) {
+            setCurrentLocation(validPoints[validPoints.length - 1]);
+          }
+        }
+        await clearBackgroundPoints();
+      }
+    } catch (e) {
+      console.error('Sync background points error:', e);
+    }
+  }, []);
+
   useEffect(() => {
-    if (isCheckedIn && dayRecord.checkInTime) {
+    const sub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
+      if (appStateRef.current.match(/inactive|background/) && nextState === 'active') {
+        if (activeTripRef.current) {
+          await syncBackgroundPoints();
+          refreshDayRecord();
+        }
+      }
+      appStateRef.current = nextState;
+    });
+    return () => sub.remove();
+  }, [refreshDayRecord, syncBackgroundPoints]);
+
+  useEffect(() => {
+    if (isCheckedIn && dayRecord.activeTrip) {
       timerRef.current = setInterval(() => {
-        const start = new Date(dayRecord.checkInTime!).getTime();
-        const now = Date.now();
-        setWorkingMinutes(Math.floor((now - start) / 60000));
+        const start = new Date(dayRecord.activeTrip!.startTime).getTime();
+        const baseMinutes = dayRecord.trips
+          .filter(t => t.endTime)
+          .reduce((sum, t) => {
+            return sum + Math.floor((new Date(t.endTime!).getTime() - new Date(t.startTime).getTime()) / 60000);
+          }, 0);
+        const activeMinutes = Math.floor((Date.now() - start) / 60000);
+        setWorkingMinutes(baseMinutes + activeMinutes);
       }, 10000);
-      const start = new Date(dayRecord.checkInTime).getTime();
-      setWorkingMinutes(Math.floor((Date.now() - start) / 60000));
-    } else if (dayRecord.checkInTime && dayRecord.checkOutTime) {
-      const start = new Date(dayRecord.checkInTime).getTime();
-      const end = new Date(dayRecord.checkOutTime).getTime();
-      setWorkingMinutes(Math.floor((end - start) / 60000));
+
+      const start = new Date(dayRecord.activeTrip.startTime).getTime();
+      const baseMinutes = dayRecord.trips
+        .filter(t => t.endTime)
+        .reduce((sum, t) => {
+          return sum + Math.floor((new Date(t.endTime!).getTime() - new Date(t.startTime).getTime()) / 60000);
+        }, 0);
+      setWorkingMinutes(baseMinutes + Math.floor((Date.now() - start) / 60000));
+    } else {
+      setWorkingMinutes(dayRecord.totalWorkingMinutes);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isCheckedIn, dayRecord.checkInTime, dayRecord.checkOutTime]);
+  }, [isCheckedIn, dayRecord.activeTrip, dayRecord.trips, dayRecord.totalWorkingMinutes]);
+
+  const isValidPoint = useCallback((point: LocationPoint, lastPoint: LocationPoint | null): boolean => {
+    if (point.accuracy && point.accuracy > MAX_ACCURACY_METERS) {
+      return false;
+    }
+
+    if (lastPoint) {
+      const distKm = calculateDistance(lastPoint.latitude, lastPoint.longitude, point.latitude, point.longitude);
+      const distMeters = distKm * 1000;
+
+      if (distMeters < MIN_DISTANCE_METERS) {
+        return false;
+      }
+
+      const timeDiff = (point.timestamp - lastPoint.timestamp) / 1000;
+      if (timeDiff > 0) {
+        const speed = distMeters / timeDiff;
+        if (speed > MAX_SPEED_MPS) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }, []);
+
+  const addTripPoint = useCallback((point: LocationPoint) => {
+    const lastPoint = tripPointsRef.current.length > 0
+      ? tripPointsRef.current[tripPointsRef.current.length - 1]
+      : null;
+
+    if (!isValidPoint(point, lastPoint)) return;
+
+    tripPointsRef.current = [...tripPointsRef.current, point];
+    setTripPoints([...tripPointsRef.current]);
+  }, [isValidPoint]);
 
   const startLocationTracking = useCallback(async () => {
     try {
@@ -87,12 +209,13 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
               latitude: loc.coords.latitude,
               longitude: loc.coords.longitude,
               timestamp: loc.timestamp,
+              accuracy: loc.coords.accuracy ?? undefined,
+              speed: loc.coords.speed ?? undefined,
             };
             setCurrentLocation(point);
-            await addRoutePoint(point);
-            await refreshDayRecord();
+            addTripPoint(point);
           } catch (e) { /* skip */ }
-        }, 8000);
+        }, TRACKING_TIME_INTERVAL);
         locationSubRef.current = { remove: () => clearInterval(webTrack) } as any;
         return;
       }
@@ -100,30 +223,42 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       const sub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
-          timeInterval: 5000,
-          distanceInterval: 5,
+          timeInterval: TRACKING_TIME_INTERVAL,
+          distanceInterval: TRACKING_DISTANCE_INTERVAL,
         },
-        async (loc) => {
+        (loc) => {
           const point: LocationPoint = {
             latitude: loc.coords.latitude,
             longitude: loc.coords.longitude,
             timestamp: loc.timestamp,
+            accuracy: loc.coords.accuracy ?? undefined,
+            speed: loc.coords.speed ?? undefined,
           };
           setCurrentLocation(point);
-          await addRoutePoint(point);
-          await refreshDayRecord();
+          addTripPoint(point);
         }
       );
       locationSubRef.current = sub;
+
+      const bgStarted = await startBackgroundTracking();
+      bgTrackingActiveRef.current = bgStarted;
+      if (bgStarted) {
+        console.log('Background tracking enabled via foreground service');
+      }
     } catch (e: any) {
       console.error('Location tracking error:', e.message);
     }
-  }, [refreshDayRecord]);
+  }, [addTripPoint]);
 
-  const stopLocationTracking = useCallback(() => {
+  const stopLocationTracking = useCallback(async () => {
     if (locationSubRef.current) {
       locationSubRef.current.remove();
       locationSubRef.current = null;
+    }
+
+    if (bgTrackingActiveRef.current) {
+      await stopBackgroundTracking();
+      bgTrackingActiveRef.current = false;
     }
   }, []);
 
@@ -131,8 +266,35 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     if (isCheckedIn) {
       startLocationTracking();
     }
-    return () => stopLocationTracking();
+    return () => {
+      stopLocationTracking();
+    };
   }, [isCheckedIn, startLocationTracking, stopLocationTracking]);
+
+  const getLocationWithFallback = useCallback(async (): Promise<Location.LocationObject> => {
+    if (Platform.OS === 'web') {
+      return Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+    }
+
+    try {
+      return await Promise.race([
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('High accuracy timeout')), 8000)),
+      ]);
+    } catch {
+      try {
+        return await Promise.race([
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Balanced accuracy timeout')), 8000)),
+        ]);
+      } catch {
+        return await Promise.race([
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Low accuracy timeout')), 10000)),
+        ]);
+      }
+    }
+  }, []);
 
   const performCheckIn = useCallback(async (): Promise<boolean> => {
     try {
@@ -144,34 +306,10 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
       let loc;
       try {
-        if (Platform.OS === 'web') {
-          loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        } else {
-          loc = await Promise.race([
-            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('High accuracy timeout')), 8000)),
-          ]);
-        }
-      } catch (highAccErr: any) {
-        console.warn('High accuracy failed, trying balanced:', highAccErr.message);
-        try {
-          loc = await Promise.race([
-            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Balanced accuracy timeout')), 8000)),
-          ]);
-        } catch (balancedErr: any) {
-          console.error('Balanced accuracy also failed:', balancedErr.message);
-          try {
-            loc = await Promise.race([
-              Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }),
-              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Low accuracy timeout')), 10000)),
-            ]);
-          } catch (lowErr: any) {
-            console.error('All location attempts failed:', lowErr.message);
-            Alert.alert('Location Error', 'Could not get your GPS location. Please make sure Location/GPS is turned on in your device settings and try again.');
-            return false;
-          }
-        }
+        loc = await getLocationWithFallback();
+      } catch (e: any) {
+        Alert.alert('Location Error', 'Could not get your GPS location. Please make sure Location/GPS is turned on in your device settings and try again.');
+        return false;
       }
 
       if (!loc || !loc.coords) {
@@ -183,14 +321,19 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
         timestamp: loc.timestamp,
+        accuracy: loc.coords.accuracy ?? undefined,
       };
-      console.log('Got location for check-in:', point.latitude, point.longitude);
       setCurrentLocation(point);
 
+      tripPointsRef.current = [point];
+      setTripPoints([point]);
+
+      await clearBackgroundPoints();
+
       try {
-        const record = await storageCheckIn(point);
-        setDayRecord(record);
-        console.log('Check-in completed successfully');
+        const trip = await startTrip(point);
+        activeTripRef.current = trip;
+        await refreshDayRecord();
         return true;
       } catch (saveError: any) {
         console.error('Check-in save error:', saveError.message);
@@ -202,18 +345,94 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       Alert.alert('Check-in Error', e.message || 'An unexpected error occurred during check-in.');
       return false;
     }
-  }, []);
+  }, [getLocationWithFallback, refreshDayRecord]);
 
   const performCheckOut = useCallback(async () => {
     try {
-      stopLocationTracking();
-      const record = await storageCheckOut();
-      setDayRecord(record);
+      await stopLocationTracking();
+
+      await syncBackgroundPoints();
+
+      const activeTrip = activeTripRef.current;
+      if (!activeTrip) {
+        Alert.alert('Error', 'No active trip found to check out.');
+        return;
+      }
+
+      let endLocation: LocationPoint;
+      try {
+        const loc = await getLocationWithFallback();
+        endLocation = {
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          timestamp: loc.timestamp,
+          accuracy: loc.coords.accuracy ?? undefined,
+        };
+      } catch {
+        const lastPoint = tripPointsRef.current.length > 0
+          ? tripPointsRef.current[tripPointsRef.current.length - 1]
+          : { latitude: activeTrip.startLat, longitude: activeTrip.startLng, timestamp: Date.now() };
+        endLocation = lastPoint;
+      }
+
+      const startPoint: LocationPoint = {
+        latitude: activeTrip.startLat,
+        longitude: activeTrip.startLng,
+        timestamp: new Date(activeTrip.startTime).getTime(),
+      };
+
+      if (tripPointsRef.current.length === 0) {
+        tripPointsRef.current = [startPoint];
+      }
+
+      const lastPoint = tripPointsRef.current[tripPointsRef.current.length - 1];
+      const endDistFromLast = calculateDistance(
+        lastPoint.latitude, lastPoint.longitude,
+        endLocation.latitude, endLocation.longitude
+      ) * 1000;
+      if (endDistFromLast >= 1) {
+        tripPointsRef.current = [...tripPointsRef.current, endLocation];
+      }
+
+      if (tripPointsRef.current.length < 2) {
+        tripPointsRef.current = [startPoint, endLocation];
+      }
+
+      try {
+        await saveRoutePoints(activeTrip.id, tripPointsRef.current);
+      } catch (e: any) {
+        console.warn('Failed to save route points to backup table:', e.message);
+      }
+
+      let snappedPolyline: string | null = null;
+      if (tripPointsRef.current.length >= 2) {
+        try {
+          const snappedPoints = await snapToRoads(tripPointsRef.current);
+          if (snappedPoints.length >= 2) {
+            snappedPolyline = encodePolyline(snappedPoints);
+          }
+        } catch (e: any) {
+          console.warn('Road snapping failed, using raw GPS points:', e.message);
+        }
+      }
+
+      if (!snappedPolyline && tripPointsRef.current.length >= 2) {
+        snappedPolyline = encodePolyline(tripPointsRef.current);
+      }
+
+      await endTrip(activeTrip.id, tripPointsRef.current, endLocation, snappedPolyline);
+
+      tripPointsRef.current = [];
+      setTripPoints([]);
+      activeTripRef.current = null;
+      await clearBackgroundPoints();
+
+      await refreshDayRecord();
     } catch (e: any) {
       console.error('Check-out error:', e.message);
       Alert.alert('Check-out Error', e.message || 'Could not complete check-out.');
     }
-  }, [stopLocationTracking]);
+  }, [stopLocationTracking, syncBackgroundPoints, getLocationWithFallback, refreshDayRecord]);
 
   const logVisit = useCallback(async (leadId: string, leadName: string, type: Visit['type'], notes: string, address: string) => {
     let lat = currentLocation?.latitude || 0;
@@ -226,13 +445,31 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       }
     } catch (e) { /* use current */ }
 
+    let resolvedAddress = address;
+    if (!resolvedAddress || resolvedAddress.trim() === '') {
+      try {
+        const geocode = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
+        if (geocode && geocode.length > 0) {
+          const g = geocode[0];
+          const parts = [g.name, g.street, g.district, g.city, g.region, g.postalCode].filter(Boolean);
+          resolvedAddress = parts.join(', ') || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        } else {
+          resolvedAddress = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        }
+      } catch (e) {
+        resolvedAddress = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+      }
+    }
+
+    const tripId = activeTripRef.current?.id;
+
     await addVisit({
       leadId, leadName, type,
       latitude: lat, longitude: lon,
-      address, notes,
+      address: resolvedAddress, notes,
       timestamp: new Date().toISOString(),
       duration: 0,
-    });
+    }, tripId);
 
     await refreshDayRecord();
   }, [currentLocation, refreshDayRecord]);
@@ -261,10 +498,10 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(() => ({
-    dayRecord, isCheckedIn, isTracking, currentLocation, workingMinutes,
+    dayRecord, isCheckedIn, isTracking, currentLocation, workingMinutes, tripPoints,
     refreshDayRecord, performCheckIn, performCheckOut,
     logVisit, logCall, logActivity, updateLeadStage,
-  }), [dayRecord, isCheckedIn, isTracking, currentLocation, workingMinutes,
+  }), [dayRecord, isCheckedIn, isTracking, currentLocation, workingMinutes, tripPoints,
     refreshDayRecord, performCheckIn, performCheckOut,
     logVisit, logCall, logActivity, updateLeadStage]);
 

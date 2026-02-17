@@ -541,6 +541,53 @@ export default function LeadsScreen() {
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    try {
+      const sampleData = [
+        { Name: 'Dr. Sharma', Mobile: '9876543210', Type: 'Doctor', Source: 'Referral', Address: '123 Main Road, Delhi', 'Assigned Staff': 'Self', Latitude: '', Longitude: '' },
+        { Name: 'City Hospital', Mobile: '9123456780', Type: 'Hospital', Source: 'Walk-in', Address: '45 MG Road, Mumbai', 'Assigned Staff': 'Self', Latitude: '', Longitude: '' },
+        { Name: 'Sunrise Pharmacy', Mobile: '8765432190', Type: 'Pharmacy', Source: 'Campaign', Address: '78 Station Road, Pune', 'Assigned Staff': 'Self', Latitude: '', Longitude: '' },
+      ];
+
+      const ws = XLSX.utils.json_to_sheet(sampleData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Leads Template');
+
+      ws['!cols'] = [
+        { wch: 20 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 30 },
+        { wch: 14 }, { wch: 12 }, { wch: 12 },
+      ];
+
+      if (Platform.OS === 'web') {
+        const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+        const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'leads_import_template.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+        const filePath = `${FileSystem.cacheDirectory}leads_import_template.xlsx`;
+        await FileSystem.writeAsStringAsync(filePath, wbout, { encoding: FileSystem.EncodingType.Base64 });
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare) {
+          await Sharing.shareAsync(filePath, {
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            dialogTitle: 'Download Template',
+          });
+        } else {
+          Alert.alert('Template Saved', 'Template file saved to cache.');
+        }
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      console.error('Template download error:', e);
+      Alert.alert('Error', 'Could not generate template file.');
+    }
+  };
+
   const filtered = leads.filter(l => {
     if (activeFilter !== 'All' && l.stage !== activeFilter) return false;
     if (search) {
@@ -833,6 +880,20 @@ export default function LeadsScreen() {
               <View style={styles.importExportTextCol}>
                 <Text style={styles.importExportBtnTitle}>{exporting ? 'Exporting...' : 'Export to Excel'}</Text>
                 <Text style={styles.importExportBtnSub}>{leads.length} leads will be exported</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [styles.importExportBtn, pressed && { opacity: 0.85 }]}
+              onPress={handleDownloadTemplate}
+            >
+              <View style={[styles.importExportIconBg, { backgroundColor: Colors.warningLight }]}>
+                <Ionicons name="document-outline" size={22} color={Colors.warning} />
+              </View>
+              <View style={styles.importExportTextCol}>
+                <Text style={styles.importExportBtnTitle}>Download Sample Template</Text>
+                <Text style={styles.importExportBtnSub}>Excel template with sample data</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color={Colors.textTertiary} />
             </Pressable>

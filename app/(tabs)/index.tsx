@@ -29,7 +29,7 @@ export default function DashboardScreen() {
   const { user, logout } = useAuth();
   const {
     dayRecord, isCheckedIn, currentLocation, workingMinutes,
-    performCheckIn, performCheckOut, refreshDayRecord,
+    performCheckIn, performCheckOut, refreshDayRecord, tripPoints,
   } = useTracking();
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [checkingIn, setCheckingIn] = useState(false);
@@ -59,11 +59,23 @@ export default function DashboardScreen() {
   };
 
   const handleLogout = () => {
+    if (isCheckedIn) {
+      Alert.alert('Cannot Sign Out', 'You have an active trip. Please check out first before signing out.');
+      return;
+    }
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Sign Out', style: 'destructive', onPress: async () => {
-        await logout();
-        router.replace('/login');
+        try {
+          await logout();
+          router.replace('/login');
+        } catch (e: any) {
+          if (e.message === 'ACTIVE_TRIP') {
+            Alert.alert('Cannot Sign Out', 'You have an active trip. Please check out first before signing out.');
+          } else {
+            Alert.alert('Error', 'Failed to sign out. Please try again.');
+          }
+        }
       }},
     ]);
   };
@@ -82,6 +94,10 @@ export default function DashboardScreen() {
   };
 
   const webTop = Platform.OS === 'web' ? 67 : 0;
+
+  const completedTrips = dayRecord.trips.filter(t => t.endTime);
+  const activeTrip = dayRecord.activeTrip;
+  const tripCount = dayRecord.trips.length;
 
   return (
     <View style={styles.container}>
@@ -109,23 +125,44 @@ export default function DashboardScreen() {
 
         <View style={styles.checkCard}>
           <LinearGradient
-            colors={isCheckedIn ? ['#059669', '#047857'] : dayRecord.checkOutTime ? ['#6B7280', '#4B5563'] : [Colors.primary, Colors.primaryDark]}
+            colors={isCheckedIn ? ['#059669', '#047857'] : completedTrips.length > 0 ? ['#6B7280', '#4B5563'] : [Colors.primary, Colors.primaryDark]}
             style={styles.checkGradient}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
           >
             <View style={styles.checkInfo}>
-              <View style={styles.checkTimeRow}>
-                <View style={styles.checkTimeBlock}>
-                  <Text style={styles.checkLabel}>Check In</Text>
-                  <Text style={styles.checkTime}>{formatClock(dayRecord.checkInTime)}</Text>
+              {activeTrip ? (
+                <View style={styles.checkTimeRow}>
+                  <View style={styles.checkTimeBlock}>
+                    <Text style={styles.checkLabel}>Trip Started</Text>
+                    <Text style={styles.checkTime}>{formatClock(activeTrip.startTime)}</Text>
+                  </View>
+                  <View style={styles.checkDivider} />
+                  <View style={styles.checkTimeBlock}>
+                    <Text style={styles.checkLabel}>GPS Points</Text>
+                    <Text style={styles.checkTime}>{tripPoints.length}</Text>
+                  </View>
                 </View>
-                <View style={styles.checkDivider} />
-                <View style={styles.checkTimeBlock}>
-                  <Text style={styles.checkLabel}>Check Out</Text>
-                  <Text style={styles.checkTime}>{formatClock(dayRecord.checkOutTime)}</Text>
+              ) : completedTrips.length > 0 ? (
+                <View style={styles.checkTimeRow}>
+                  <View style={styles.checkTimeBlock}>
+                    <Text style={styles.checkLabel}>Trips</Text>
+                    <Text style={styles.checkTime}>{completedTrips.length}</Text>
+                  </View>
+                  <View style={styles.checkDivider} />
+                  <View style={styles.checkTimeBlock}>
+                    <Text style={styles.checkLabel}>Total Time</Text>
+                    <Text style={styles.checkTime}>{formatTime(workingMinutes)}</Text>
+                  </View>
                 </View>
-              </View>
+              ) : (
+                <View style={styles.checkTimeRow}>
+                  <View style={styles.checkTimeBlock}>
+                    <Text style={styles.checkLabel}>No trips yet</Text>
+                    <Text style={styles.checkTime}>--:--</Text>
+                  </View>
+                </View>
+              )}
 
               {isCheckedIn ? (
                 <View style={styles.activeIndicator}>
@@ -135,27 +172,20 @@ export default function DashboardScreen() {
               ) : null}
             </View>
 
-            {!dayRecord.checkOutTime ? (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.checkButton,
-                  isCheckedIn ? styles.checkOutButton : styles.checkInButton,
-                  pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
-                ]}
-                onPress={isCheckedIn ? handleCheckOut : handleCheckIn}
-                disabled={checkingIn}
-              >
-                <Ionicons name={isCheckedIn ? 'stop-circle' : 'play-circle'} size={22} color={isCheckedIn ? Colors.danger : '#fff'} />
-                <Text style={[styles.checkButtonText, isCheckedIn && { color: Colors.danger }]}>
-                  {checkingIn ? 'Getting Location...' : isCheckedIn ? 'Check Out' : 'Check In'}
-                </Text>
-              </Pressable>
-            ) : (
-              <View style={styles.completedBadge}>
-                <Ionicons name="checkmark-circle" size={18} color="rgba(255,255,255,0.8)" />
-                <Text style={styles.completedText}>Shift Completed</Text>
-              </View>
-            )}
+            <Pressable
+              style={({ pressed }) => [
+                styles.checkButton,
+                isCheckedIn ? styles.checkOutButton : styles.checkInButton,
+                pressed && { opacity: 0.85, transform: [{ scale: 0.97 }] },
+              ]}
+              onPress={isCheckedIn ? handleCheckOut : handleCheckIn}
+              disabled={checkingIn}
+            >
+              <Ionicons name={isCheckedIn ? 'stop-circle' : 'play-circle'} size={22} color={isCheckedIn ? Colors.danger : '#fff'} />
+              <Text style={[styles.checkButtonText, isCheckedIn && { color: Colors.danger }]}>
+                {checkingIn ? 'Getting Location...' : isCheckedIn ? 'Check Out' : `Check In${tripCount > 0 ? ` (Trip ${tripCount + 1})` : ''}`}
+              </Text>
+            </Pressable>
           </LinearGradient>
         </View>
 
@@ -165,6 +195,27 @@ export default function DashboardScreen() {
           <StatCard icon="location-outline" label="Visits" value={`${dayRecord.visits.length}`} color={Colors.warning} />
           <StatCard icon="call-outline" label="Calls" value={`${dayRecord.calls.length}`} color={Colors.stageConverted} />
         </View>
+
+        {completedTrips.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Trips Today</Text>
+            {completedTrips.map((trip, i) => (
+              <View key={trip.id} style={styles.tripItem}>
+                <View style={[styles.tripIndex, { backgroundColor: Colors.primaryLight }]}>
+                  <Text style={styles.tripIndexText}>{i + 1}</Text>
+                </View>
+                <View style={styles.tripContent}>
+                  <Text style={styles.tripTimeText}>
+                    {formatClock(trip.startTime)} - {formatClock(trip.endTime)}
+                  </Text>
+                  <Text style={styles.tripMeta}>
+                    {trip.totalDistance.toFixed(2)} km  |  {trip.pointCount} pts
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
 
         {dayRecord.activities.length > 0 ? (
           <View style={styles.section}>
@@ -254,6 +305,19 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 12, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', marginTop: 2 },
   section: { marginBottom: 20 },
   sectionTitle: { fontSize: 16, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold', marginBottom: 12 },
+  tripItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.surface, borderRadius: 12, padding: 14,
+    marginBottom: 8, borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  tripIndex: {
+    width: 32, height: 32, borderRadius: 16,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  tripIndexText: { fontSize: 14, fontWeight: '700' as const, color: Colors.primary, fontFamily: 'Inter_700Bold' },
+  tripContent: { flex: 1 },
+  tripTimeText: { fontSize: 14, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold' },
+  tripMeta: { fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 },
   activityItem: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 12,
     backgroundColor: Colors.surface, borderRadius: 12, padding: 14,

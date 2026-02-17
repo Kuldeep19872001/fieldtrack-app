@@ -25,6 +25,23 @@ export interface LocationPoint {
   latitude: number;
   longitude: number;
   timestamp: number;
+  accuracy?: number;
+  speed?: number;
+}
+
+export interface Trip {
+  id: string;
+  userId: string;
+  date: string;
+  startTime: string;
+  endTime: string | null;
+  startLat: number;
+  startLng: number;
+  endLat: number | null;
+  endLng: number | null;
+  encodedPolyline: string | null;
+  totalDistance: number;
+  pointCount: number;
 }
 
 export interface Visit {
@@ -38,6 +55,7 @@ export interface Visit {
   notes: string;
   timestamp: string;
   duration: number;
+  tripId?: string;
 }
 
 export interface CallLog {
@@ -61,14 +79,13 @@ export interface Activity {
 
 export interface DayRecord {
   date: string;
-  checkInTime: string | null;
-  checkOutTime: string | null;
-  checkInLocation: LocationPoint | null;
-  routePoints: LocationPoint[];
+  trips: Trip[];
+  activeTrip: Trip | null;
   visits: Visit[];
   calls: CallLog[];
   activities: Activity[];
   totalDistance: number;
+  totalWorkingMinutes: number;
 }
 
 export interface DailySummary {
@@ -80,6 +97,7 @@ export interface DailySummary {
   leadsContacted: number;
   newLeads: number;
   convertedLeads: number;
+  tripCount: number;
 }
 
 export interface UserProfile {

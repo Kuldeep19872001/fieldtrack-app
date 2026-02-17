@@ -1,85 +1,54 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
-import { snapToRoads, clearRouteCache } from '@/lib/road-snap';
-import type { LocationPoint, Visit } from '@/lib/types';
+import type { Visit, Trip } from '@/lib/types';
+import { decodePolyline } from '@/lib/polyline';
 
 interface MapContentProps {
-  routePoints?: LocationPoint[];
+  trips?: Trip[];
+  livePoints?: Array<{ latitude: number; longitude: number }>;
   visits?: Visit[];
-  checkInLocation?: LocationPoint | null;
-  checkOutLocation?: LocationPoint | null;
-  currentLocation?: LocationPoint | null;
+  currentLocation?: { latitude: number; longitude: number } | null;
   isCheckedIn: boolean;
-  totalDistance?: number;
-  routePointsCount?: number;
-  visitsCount?: number;
   userName?: string;
 }
 
+const TRIP_COLORS = [
+  Colors.primary,
+  '#E91E63',
+  '#9C27B0',
+  '#FF9800',
+  '#009688',
+  '#3F51B5',
+];
+
 export default function MapContent({
-  routePoints = [], visits = [], checkInLocation = null, checkOutLocation = null, currentLocation = null, isCheckedIn, userName = 'User',
+  trips = [], livePoints = [], visits = [], currentLocation = null, isCheckedIn, userName = 'User',
 }: MapContentProps) {
   const mapRef = useRef<MapView>(null);
   const insets = useSafeAreaInsets();
-  const [snappedRoute, setSnappedRoute] = useState<{ latitude: number; longitude: number }[]>([]);
-  const lastSnapCountRef = useRef(0);
-  const snapInProgressRef = useRef(false);
-  const snapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    if (routePoints.length < 2) {
-      setSnappedRoute(routePoints.map(p => ({ latitude: p.latitude, longitude: p.longitude })));
-      lastSnapCountRef.current = routePoints.length;
-      return;
-    }
+  const decodedTrips = trips.map((trip, idx) => {
+    if (!trip.encodedPolyline) return { trip, coords: [], color: TRIP_COLORS[idx % TRIP_COLORS.length] };
+    const coords = decodePolyline(trip.encodedPolyline);
+    return { trip, coords, color: TRIP_COLORS[idx % TRIP_COLORS.length] };
+  }).filter(t => t.coords.length >= 2);
 
-    const pointDiff = routePoints.length - lastSnapCountRef.current;
-    if (pointDiff <= 0 || snapInProgressRef.current) return;
-
-    if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
-
-    snapTimerRef.current = setTimeout(() => {
-      snapInProgressRef.current = true;
-      let cancelled = false;
-
-      clearRouteCache();
-      snapToRoads(routePoints).then(coords => {
-        if (!cancelled) {
-          setSnappedRoute(coords);
-          lastSnapCountRef.current = routePoints.length;
-        }
-        snapInProgressRef.current = false;
-      }).catch(() => {
-        if (!cancelled) {
-          setSnappedRoute(routePoints.map(p => ({ latitude: p.latitude, longitude: p.longitude })));
-          lastSnapCountRef.current = routePoints.length;
-        }
-        snapInProgressRef.current = false;
-      });
-
-      return () => { cancelled = true; };
-    }, 2000);
-
-    return () => {
-      if (snapTimerRef.current) clearTimeout(snapTimerRef.current);
-    };
-  }, [routePoints]);
-
-  const displayRoute = snappedRoute.length > 1 ? snappedRoute :
-    routePoints.map(p => ({ latitude: p.latitude, longitude: p.longitude }));
+  const allCoords: Array<{ latitude: number; longitude: number }> = [];
+  decodedTrips.forEach(t => allCoords.push(...t.coords));
+  if (livePoints.length > 0) allCoords.push(...livePoints);
 
   const initialRegion = currentLocation ? {
     latitude: currentLocation.latitude,
     longitude: currentLocation.longitude,
     latitudeDelta: 0.02,
     longitudeDelta: 0.02,
-  } : checkInLocation ? {
-    latitude: checkInLocation.latitude,
-    longitude: checkInLocation.longitude,
+  } : allCoords.length > 0 ? {
+    latitude: allCoords[0].latitude,
+    longitude: allCoords[0].longitude,
     latitudeDelta: 0.02,
     longitudeDelta: 0.02,
   } : {
@@ -101,8 +70,9 @@ export default function MapContent({
   };
 
   const fitRoute = () => {
-    if (mapRef.current && displayRoute.length > 1) {
-      mapRef.current.fitToCoordinates(displayRoute, {
+    const coordsToFit = allCoords.length > 0 ? allCoords : (currentLocation ? [currentLocation] : []);
+    if (mapRef.current && coordsToFit.length > 1) {
+      mapRef.current.fitToCoordinates(coordsToFit, {
         edgePadding: { top: 120, right: 60, bottom: 120, left: 60 },
         animated: true,
       });
@@ -119,33 +89,46 @@ export default function MapContent({
         showsMyLocationButton={false}
         showsCompass={true}
       >
-        {displayRoute.length > 1 && (
+        {decodedTrips.map((dt) => (
           <Polyline
-            coordinates={displayRoute}
-            strokeColor={Colors.primary}
+            key={dt.trip.id}
+            coordinates={dt.coords}
+            strokeColor={dt.color}
             strokeWidth={4}
             lineCap="round"
             lineJoin="round"
           />
-        )}
+        ))}
 
-        {checkInLocation && (
-          <Marker
-            coordinate={{ latitude: checkInLocation.latitude, longitude: checkInLocation.longitude }}
-            title="Check In"
-            description={`Checked in at ${new Date().toLocaleTimeString()}`}
-            pinColor="green"
+        {livePoints.length >= 2 && (
+          <Polyline
+            coordinates={livePoints}
+            strokeColor={Colors.primary}
+            strokeWidth={4}
+            lineCap="round"
+            lineJoin="round"
+            lineDashPattern={[0]}
           />
         )}
 
-        {checkOutLocation && (
-          <Marker
-            coordinate={{ latitude: checkOutLocation.latitude, longitude: checkOutLocation.longitude }}
-            title="Check Out"
-            description="End of shift"
-            pinColor="red"
-          />
-        )}
+        {trips.map((trip, idx) => (
+          <React.Fragment key={`markers-${trip.id}`}>
+            <Marker
+              coordinate={{ latitude: trip.startLat, longitude: trip.startLng }}
+              title={`Trip ${idx + 1} Start`}
+              description={new Date(trip.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              pinColor="green"
+            />
+            {trip.endLat != null && trip.endLng != null && (
+              <Marker
+                coordinate={{ latitude: trip.endLat, longitude: trip.endLng }}
+                title={`Trip ${idx + 1} End`}
+                description={trip.endTime ? new Date(trip.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                pinColor="red"
+              />
+            )}
+          </React.Fragment>
+        ))}
 
         {visits.map((visit) => (
           <Marker
@@ -167,7 +150,7 @@ export default function MapContent({
       </MapView>
 
       <View style={[styles.buttonColumn, { bottom: insets.bottom + 100 }]}>
-        {displayRoute.length > 1 && (
+        {(allCoords.length > 1 || livePoints.length > 1) && (
           <Pressable style={styles.mapButton} onPress={fitRoute}>
             <Ionicons name="expand" size={20} color={Colors.primary} />
           </Pressable>

@@ -1,52 +1,98 @@
-import React from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, Platform, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/colors';
 import { useTracking } from '@/lib/tracking-context';
 import { useAuth } from '@/lib/auth-context';
+import { getTripsByDateRange } from '@/lib/storage';
 import MapContent from '@/components/MapContent';
+import DateRangePicker from '@/components/DateRangePicker';
+import type { Trip, Visit } from '@/lib/types';
+
+function formatDateShort(d: Date): string {
+  return d.toISOString().split('T')[0];
+}
 
 export default function MapScreen() {
-  const { dayRecord, currentLocation, isCheckedIn } = useTracking();
+  const { dayRecord, currentLocation, isCheckedIn, tripPoints } = useTracking();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const webTop = Platform.OS === 'web' ? 67 : 0;
 
-  const checkOutLocation = dayRecord.checkOutTime && dayRecord.routePoints.length > 0
-    ? dayRecord.routePoints[dayRecord.routePoints.length - 1]
-    : null;
+  const today = formatDateShort(new Date());
+  const [fromDate, setFromDate] = useState(today);
+  const [toDate, setToDate] = useState(today);
+  const [displayTrips, setDisplayTrips] = useState<Trip[]>([]);
+  const [displayVisits, setDisplayVisits] = useState<Visit[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+
+  const isToday = fromDate === today && toDate === today;
+
+  const tripsToShow = isToday ? dayRecord.trips : displayTrips;
+  const visitsToShow = isToday ? dayRecord.visits : displayVisits;
+  const totalDistance = isToday
+    ? dayRecord.totalDistance
+    : displayTrips.reduce((sum, t) => sum + t.totalDistance, 0);
+  const tripCount = tripsToShow.length;
+
+  const livePoints = isToday && isCheckedIn
+    ? tripPoints.map(p => ({ latitude: p.latitude, longitude: p.longitude }))
+    : [];
+
+  const loadRangeTrips = useCallback(async (from: string, to: string) => {
+    if (from === today && to === today) return;
+    setIsLoadingHistory(true);
+    try {
+      const trips = await getTripsByDateRange(from, to);
+      setDisplayTrips(trips);
+      setDisplayVisits([]);
+    } catch (e) {
+      console.error('Load range trips error:', e);
+    }
+    setIsLoadingHistory(false);
+  }, [today]);
+
+  const handleDateRangeChange = useCallback((from: string, to: string) => {
+    setFromDate(from);
+    setToDate(to);
+    if (from !== today || to !== today) {
+      loadRangeTrips(from, to);
+    }
+  }, [today, loadRangeTrips]);
 
   return (
     <View style={styles.container}>
       {Platform.OS !== 'web' ? (
         <>
           <MapContent
-            routePoints={dayRecord.routePoints}
-            visits={dayRecord.visits}
-            checkInLocation={dayRecord.checkInLocation}
-            checkOutLocation={checkOutLocation}
+            trips={tripsToShow}
+            livePoints={livePoints}
+            visits={visitsToShow}
             currentLocation={currentLocation}
             isCheckedIn={isCheckedIn}
-            totalDistance={dayRecord.totalDistance}
-            routePointsCount={dayRecord.routePoints.length}
-            visitsCount={dayRecord.visits.length}
             userName={user?.name || 'User'}
           />
           <View style={[styles.mapOverlay, { top: insets.top + 12 }]}>
             <View style={styles.mapInfoCard}>
+              <DateRangePicker
+                fromDate={fromDate}
+                toDate={toDate}
+                onDateRangeChange={handleDateRangeChange}
+              />
+
               <View style={styles.mapInfoRow}>
-                <View style={[styles.statusDot, { backgroundColor: isCheckedIn ? Colors.success : Colors.textTertiary }]} />
+                <View style={[styles.statusDot, { backgroundColor: isToday && isCheckedIn ? Colors.success : Colors.textTertiary }]} />
                 <Text style={styles.mapInfoText}>
-                  {isCheckedIn ? 'Tracking Active' : dayRecord.checkOutTime ? 'Shift Complete' : 'Not Checked In'}
+                  {isToday && isCheckedIn ? 'Tracking Active' : isToday && dayRecord.trips.some(t => t.endTime) ? 'Trips Today' : !isToday ? 'History' : 'Not Checked In'}
                 </Text>
               </View>
               <View style={styles.mapStatsRow}>
-                <Text style={styles.mapStatItem}>{dayRecord.totalDistance.toFixed(2)} km</Text>
+                <Text style={styles.mapStatItem}>{totalDistance.toFixed(2)} km</Text>
                 <View style={styles.mapStatDivider} />
-                <Text style={styles.mapStatItem}>{dayRecord.visits.length} visits</Text>
+                <Text style={styles.mapStatItem}>{tripCount} trip{tripCount !== 1 ? 's' : ''}</Text>
                 <View style={styles.mapStatDivider} />
-                <Text style={styles.mapStatItem}>{dayRecord.routePoints.length} pts</Text>
+                <Text style={styles.mapStatItem}>{visitsToShow.length} visits</Text>
               </View>
             </View>
           </View>
@@ -54,12 +100,16 @@ export default function MapScreen() {
       ) : (
         <View style={{ flex: 1, paddingTop: insets.top + webTop }}>
           <View style={styles.webHeader}>
-            <Text style={styles.webTitle}>Live Route Map</Text>
+            <Text style={styles.webTitle}>Route Map</Text>
+            <DateRangePicker
+              fromDate={fromDate}
+              toDate={toDate}
+              onDateRangeChange={handleDateRangeChange}
+            />
           </View>
           <MapContent
-            routePointsCount={dayRecord.routePoints.length}
-            totalDistance={dayRecord.totalDistance}
-            visitsCount={dayRecord.visits.length}
+            trips={tripsToShow}
+            livePoints={livePoints}
             isCheckedIn={isCheckedIn}
           />
         </View>
@@ -84,5 +134,5 @@ const styles = StyleSheet.create({
   mapStatItem: { fontSize: 13, color: Colors.textSecondary, fontFamily: 'Inter_500Medium' },
   mapStatDivider: { width: 1, height: 14, backgroundColor: Colors.border },
   webHeader: { paddingHorizontal: 20, paddingVertical: 16 },
-  webTitle: { fontSize: 24, fontWeight: '700' as const, color: Colors.text, fontFamily: 'Inter_700Bold' },
+  webTitle: { fontSize: 24, fontWeight: '700' as const, color: Colors.text, fontFamily: 'Inter_700Bold', marginBottom: 8 },
 });

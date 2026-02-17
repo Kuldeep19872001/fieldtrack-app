@@ -1,5 +1,6 @@
 import { supabase, getCachedUserId } from './supabase';
-import type { Lead, DayRecord, LocationPoint, Visit, CallLog, Activity } from './types';
+import { encodePolyline } from './polyline';
+import type { Lead, Trip, LocationPoint, Visit, CallLog, Activity, DayRecord } from './types';
 
 async function getAuthUserId(): Promise<string> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -134,7 +135,6 @@ export async function createLead(data: {
   assignedStaff: string;
 }): Promise<Lead> {
   const userId = await getAuthUserId();
-  console.log('Creating lead for user:', userId, 'data:', JSON.stringify(data));
   const insertData = {
     user_id: userId,
     name: data.name,
@@ -157,7 +157,6 @@ export async function createLead(data: {
     throw new Error(error.message || 'Failed to create lead');
   }
   if (!row) throw new Error('No data returned after creating lead');
-  console.log('Lead created successfully:', row.id);
   return transformLead(row);
 }
 
@@ -213,6 +212,144 @@ export async function getLeadById(id: string): Promise<Lead | undefined> {
   }
 }
 
+function transformTrip(row: any): Trip {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    date: row.date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    startLat: row.start_lat,
+    startLng: row.start_lng,
+    endLat: row.end_lat,
+    endLng: row.end_lng,
+    encodedPolyline: row.encoded_polyline,
+    totalDistance: row.total_distance || 0,
+    pointCount: row.point_count || 0,
+  };
+}
+
+export async function startTrip(location: LocationPoint): Promise<Trip> {
+  const userId = await getAuthUserId();
+  const today = new Date().toISOString().split('T')[0];
+
+  const { data: row, error } = await supabase
+    .from('trips')
+    .insert({
+      user_id: userId,
+      date: today,
+      start_time: new Date().toISOString(),
+      start_lat: location.latitude,
+      start_lng: location.longitude,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Start trip error:', error.message, error.details);
+    throw new Error('Failed to start trip: ' + error.message);
+  }
+
+  return transformTrip(row);
+}
+
+export async function endTrip(
+  tripId: string,
+  points: LocationPoint[],
+  endLocation: LocationPoint,
+  snappedPolyline?: string | null
+): Promise<Trip> {
+  const encodedPoly = snappedPolyline || (points.length >= 2 ? encodePolyline(points) : null);
+  const totalDist = calculateTotalDistance(points);
+
+  const { data: row, error } = await supabase
+    .from('trips')
+    .update({
+      end_time: new Date().toISOString(),
+      end_lat: endLocation.latitude,
+      end_lng: endLocation.longitude,
+      encoded_polyline: encodedPoly,
+      total_distance: totalDist,
+      point_count: points.length,
+    })
+    .eq('id', tripId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('End trip error:', error.message, error.details);
+    throw new Error('Failed to end trip: ' + error.message);
+  }
+
+  return transformTrip(row);
+}
+
+export async function getActiveTrip(): Promise<Trip | null> {
+  try {
+    const userId = await getAuthUserId();
+    const { data, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .is('end_time', null)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Get active trip error:', error.message);
+      return null;
+    }
+    return data ? transformTrip(data) : null;
+  } catch (e: any) {
+    console.error('Get active trip exception:', e.message);
+    return null;
+  }
+}
+
+export async function getTripsByDate(date: string): Promise<Trip[]> {
+  try {
+    const userId = await getAuthUserId();
+    const { data, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('date', date)
+      .order('start_time', { ascending: true });
+
+    if (error) {
+      console.error('Get trips by date error:', error.message);
+      return [];
+    }
+    return (data || []).map(transformTrip);
+  } catch (e: any) {
+    console.error('Get trips by date exception:', e.message);
+    return [];
+  }
+}
+
+export async function getTripsByDateRange(startDate: string, endDate: string): Promise<Trip[]> {
+  try {
+    const userId = await getAuthUserId();
+    const { data, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('date', startDate)
+      .lte('date', endDate)
+      .order('start_time', { ascending: true });
+
+    if (error) {
+      console.error('Get trips by date range error:', error.message);
+      return [];
+    }
+    return (data || []).map(transformTrip);
+  } catch (e: any) {
+    console.error('Get trips by date range exception:', e.message);
+    return [];
+  }
+}
+
 async function getOrCreateDayRecord(userId: string, date: string): Promise<any> {
   const { data: existing, error: selectError } = await supabase
     .from('day_records')
@@ -241,9 +378,7 @@ async function getOrCreateDayRecord(userId: string, date: string): Promise<any> 
       .eq('user_id', userId)
       .eq('date', date)
       .maybeSingle();
-    if (retryError) {
-      console.error('Day record retry error:', retryError.message);
-    }
+    if (retryError) console.error('Day record retry error:', retryError.message);
     if (retry) return retry;
     throw new Error('Failed to create day record: ' + insertError.message);
   }
@@ -256,32 +391,33 @@ export async function getDayRecord(date?: string): Promise<DayRecord> {
     const userId = await getAuthUserId();
     const dayRecord = await getOrCreateDayRecord(userId, d);
 
-    const [routeRes, visitsRes, callsRes, activitiesRes] = await Promise.all([
-      supabase.from('route_points').select('latitude, longitude, timestamp').eq('day_record_id', dayRecord.id).order('timestamp'),
+    const [tripsRes, visitsRes, callsRes, activitiesRes] = await Promise.all([
+      supabase.from('trips').select('*').eq('user_id', userId).eq('date', d).order('start_time'),
       supabase.from('visits').select('*').eq('day_record_id', dayRecord.id).order('timestamp'),
       supabase.from('calls').select('*').eq('day_record_id', dayRecord.id).order('timestamp'),
       supabase.from('activities').select('*').eq('day_record_id', dayRecord.id).order('timestamp'),
     ]);
 
-    if (routeRes.error) console.error('Route points fetch error:', routeRes.error.message);
+    if (tripsRes.error) console.error('Trips fetch error:', tripsRes.error.message);
     if (visitsRes.error) console.error('Visits fetch error:', visitsRes.error.message);
     if (callsRes.error) console.error('Calls fetch error:', callsRes.error.message);
     if (activitiesRes.error) console.error('Activities fetch error:', activitiesRes.error.message);
 
-    const checkInLocation = dayRecord.check_in_lat != null && dayRecord.check_in_lng != null
-      ? { latitude: dayRecord.check_in_lat, longitude: dayRecord.check_in_lng, timestamp: dayRecord.check_in_timestamp || 0 }
-      : null;
+    const trips = (tripsRes.data || []).map(transformTrip);
+    const activeTrip = trips.find(t => !t.endTime) || null;
+    const totalDistance = trips.reduce((sum, t) => sum + t.totalDistance, 0);
+
+    let totalWorkingMinutes = 0;
+    for (const trip of trips) {
+      const start = new Date(trip.startTime).getTime();
+      const end = trip.endTime ? new Date(trip.endTime).getTime() : Date.now();
+      totalWorkingMinutes += Math.floor((end - start) / 60000);
+    }
 
     return {
-      date: dayRecord.date,
-      checkInTime: dayRecord.check_in_time,
-      checkOutTime: dayRecord.check_out_time,
-      checkInLocation,
-      routePoints: (routeRes.data || []).map((r: any) => ({
-        latitude: r.latitude,
-        longitude: r.longitude,
-        timestamp: r.timestamp,
-      })),
+      date: d,
+      trips,
+      activeTrip,
       visits: (visitsRes.data || []).map((r: any) => ({
         id: r.id,
         leadId: r.lead_id,
@@ -293,6 +429,7 @@ export async function getDayRecord(date?: string): Promise<DayRecord> {
         notes: r.notes,
         timestamp: r.timestamp,
         duration: r.duration,
+        tripId: r.trip_id,
       })),
       calls: (callsRes.data || []).map((r: any) => ({
         id: r.id,
@@ -311,125 +448,45 @@ export async function getDayRecord(date?: string): Promise<DayRecord> {
         description: r.description,
         timestamp: r.timestamp,
       })),
-      totalDistance: dayRecord.total_distance || 0,
+      totalDistance,
+      totalWorkingMinutes,
     };
   } catch (e: any) {
     console.error('getDayRecord error:', e.message);
     return {
       date: d,
-      checkInTime: null,
-      checkOutTime: null,
-      checkInLocation: null,
-      routePoints: [],
+      trips: [],
+      activeTrip: null,
       visits: [],
       calls: [],
       activities: [],
       totalDistance: 0,
+      totalWorkingMinutes: 0,
     };
   }
 }
 
-export async function checkIn(location: LocationPoint): Promise<DayRecord> {
-  const userId = await getAuthUserId();
-  const today = new Date().toISOString().split('T')[0];
-  console.log('Check-in starting for user:', userId, 'date:', today, 'location:', location);
-
-  const dayRecord = await getOrCreateDayRecord(userId, today);
-  console.log('Day record obtained:', dayRecord.id);
-
-  const { error: updateError } = await supabase
-    .from('day_records')
-    .update({
-      check_in_time: new Date().toISOString(),
-      check_in_lat: location.latitude,
-      check_in_lng: location.longitude,
-      check_in_timestamp: location.timestamp,
-    })
-    .eq('id', dayRecord.id);
-
-  if (updateError) {
-    console.error('Check-in update error:', updateError.message, updateError.details, updateError.hint);
-    throw new Error('Failed to save check-in: ' + updateError.message);
-  }
-
-  console.log('Check-in saved successfully');
-  return getDayRecord(today);
-}
-
-export async function checkOut(): Promise<DayRecord> {
-  const userId = await getAuthUserId();
-  const today = new Date().toISOString().split('T')[0];
-
-  const { error } = await supabase
-    .from('day_records')
-    .update({ check_out_time: new Date().toISOString() })
-    .eq('user_id', userId)
-    .eq('date', today);
-
-  if (error) {
-    console.error('Check-out error:', error.message);
-    throw new Error('Failed to check out: ' + error.message);
-  }
-
-  return getDayRecord(today);
-}
-
-export async function addRoutePoint(point: LocationPoint): Promise<void> {
-  try {
-    const userId = await getAuthUserId();
-    const today = new Date().toISOString().split('T')[0];
-    const dayRecord = await getOrCreateDayRecord(userId, today);
-
-    const { error: insertError } = await supabase.from('route_points').insert({
-      day_record_id: dayRecord.id,
-      latitude: point.latitude,
-      longitude: point.longitude,
-      timestamp: point.timestamp,
-    });
-
-    if (insertError) {
-      console.warn('Route point insert error:', insertError.message);
-      return;
-    }
-
-    const { data: lastPoints } = await supabase
-      .from('route_points')
-      .select('latitude, longitude')
-      .eq('day_record_id', dayRecord.id)
-      .order('timestamp', { ascending: false })
-      .limit(2);
-
-    if (lastPoints && lastPoints.length >= 2) {
-      const [current, previous] = lastPoints;
-      const dist = calculateDistance(previous.latitude, previous.longitude, current.latitude, current.longitude);
-      await supabase
-        .from('day_records')
-        .update({ total_distance: (dayRecord.total_distance || 0) + dist })
-        .eq('id', dayRecord.id);
-    }
-  } catch (e: any) {
-    console.warn('Route point save error:', e.message);
-  }
-}
-
-export async function addVisit(visit: Omit<Visit, 'id'>): Promise<Visit> {
+export async function addVisit(visit: Omit<Visit, 'id'>, tripId?: string): Promise<Visit> {
   const userId = await getAuthUserId();
   const today = new Date().toISOString().split('T')[0];
   const dayRecord = await getOrCreateDayRecord(userId, today);
+
+  const insertData: any = {
+    day_record_id: dayRecord.id,
+    lead_id: visit.leadId,
+    lead_name: visit.leadName,
+    type: visit.type,
+    latitude: visit.latitude,
+    longitude: visit.longitude,
+    address: visit.address || '',
+    notes: visit.notes || '',
+    duration: visit.duration || 0,
+  };
+  if (tripId) insertData.trip_id = tripId;
 
   const { data: row, error } = await supabase
     .from('visits')
-    .insert({
-      day_record_id: dayRecord.id,
-      lead_id: visit.leadId,
-      lead_name: visit.leadName,
-      type: visit.type,
-      latitude: visit.latitude,
-      longitude: visit.longitude,
-      address: visit.address || '',
-      notes: visit.notes || '',
-      duration: visit.duration || 0,
-    })
+    .insert(insertData)
     .select()
     .single();
 
@@ -449,6 +506,7 @@ export async function addVisit(visit: Omit<Visit, 'id'>): Promise<Visit> {
     notes: row.notes,
     timestamp: row.timestamp,
     duration: row.duration,
+    tripId: row.trip_id,
   };
 }
 
@@ -543,6 +601,33 @@ export async function addActivity(activity: Omit<Activity, 'id'>): Promise<Activ
     description: row.description,
     timestamp: row.timestamp,
   };
+}
+
+export async function saveRoutePoints(tripId: string, points: LocationPoint[]): Promise<void> {
+  if (points.length === 0) return;
+  try {
+    const userId = await getAuthUserId();
+    const today = new Date().toISOString().split('T')[0];
+    const dayRecord = await getOrCreateDayRecord(userId, today);
+
+    const rows = points.map(p => ({
+      day_record_id: dayRecord.id,
+      latitude: p.latitude,
+      longitude: p.longitude,
+      timestamp: Math.round(p.timestamp),
+    }));
+
+    const batchSize = 50;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
+      const { error } = await supabase.from('route_points').insert(batch);
+      if (error) {
+        console.error('Save route points batch error:', error.message);
+      }
+    }
+  } catch (e: any) {
+    console.error('Save route points error:', e.message);
+  }
 }
 
 export function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
