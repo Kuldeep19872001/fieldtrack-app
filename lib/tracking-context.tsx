@@ -8,7 +8,13 @@ import {
 } from './storage';
 import { snapToRoads } from './roads-api';
 import { encodePolyline } from './polyline';
-import { startBackgroundTracking, stopBackgroundTracking, getBackgroundPoints, clearBackgroundPoints } from './background-tracking';
+import {
+  startBackgroundTracking, stopBackgroundTracking,
+  getBackgroundPoints, clearBackgroundPoints,
+  saveActiveTripId, clearActiveTripId, getActiveTripId,
+  saveTripPointsBackup, getTripPointsBackup, clearTripPointsBackup,
+  isBackgroundTrackingActive,
+} from './background-tracking';
 import type { DayRecord, LocationPoint, Visit, CallLog, Activity, LeadStage, Trip } from './types';
 
 const MIN_DISTANCE_METERS = 5;
@@ -16,6 +22,7 @@ const MAX_ACCURACY_METERS = 50;
 const MAX_SPEED_MPS = 140;
 const TRACKING_TIME_INTERVAL = 5000;
 const TRACKING_DISTANCE_INTERVAL = 5;
+const POINTS_BACKUP_INTERVAL = 30000;
 
 interface TrackingContextValue {
   dayRecord: DayRecord;
@@ -49,6 +56,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   const [tripPoints, setTripPoints] = useState<LocationPoint[]>([]);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeTripRef = useRef<Trip | null>(null);
   const tripPointsRef = useRef<LocationPoint[]>([]);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -69,9 +77,56 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const restoreTripPoints = useCallback(async () => {
+    if (Platform.OS === 'web') return;
+    try {
+      const savedTripId = await getActiveTripId();
+      if (!savedTripId) return;
+
+      const savedPoints = await getTripPointsBackup();
+      if (savedPoints.length > 0) {
+        const restoredPoints: LocationPoint[] = savedPoints.map(p => ({
+          latitude: p.latitude,
+          longitude: p.longitude,
+          timestamp: p.timestamp,
+          accuracy: p.accuracy,
+          speed: p.speed,
+        }));
+        tripPointsRef.current = restoredPoints;
+        setTripPoints(restoredPoints);
+        if (restoredPoints.length > 0) {
+          setCurrentLocation(restoredPoints[restoredPoints.length - 1]);
+        }
+      }
+    } catch (e: any) {
+      console.error('Restore trip points error:', e.message);
+    }
+  }, []);
+
   useEffect(() => {
-    refreshDayRecord();
-  }, [refreshDayRecord]);
+    const init = async () => {
+      await refreshDayRecord();
+      await restoreTripPoints();
+    };
+    init();
+  }, [refreshDayRecord, restoreTripPoints]);
+
+  const persistTripPoints = useCallback(async () => {
+    if (Platform.OS === 'web') return;
+    if (tripPointsRef.current.length > 0 && activeTripRef.current) {
+      try {
+        await saveTripPointsBackup(tripPointsRef.current.map(p => ({
+          latitude: p.latitude,
+          longitude: p.longitude,
+          timestamp: p.timestamp,
+          accuracy: p.accuracy,
+          speed: p.speed,
+        })));
+      } catch (e: any) {
+        console.error('Persist trip points error:', e.message);
+      }
+    }
+  }, []);
 
   const syncBackgroundPoints = useCallback(async () => {
     if (Platform.OS === 'web') return;
@@ -110,11 +165,12 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }
         }
         await clearBackgroundPoints();
+        await persistTripPoints();
       }
     } catch (e) {
       console.error('Sync background points error:', e);
     }
-  }, []);
+  }, [persistTripPoints]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
@@ -124,10 +180,13 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           refreshDayRecord();
         }
       }
+      if (nextState.match(/inactive|background/) && activeTripRef.current) {
+        await persistTripPoints();
+      }
       appStateRef.current = nextState;
     });
     return () => sub.remove();
-  }, [refreshDayRecord, syncBackgroundPoints]);
+  }, [refreshDayRecord, syncBackgroundPoints, persistTripPoints]);
 
   useEffect(() => {
     if (isCheckedIn && dayRecord.activeTrip) {
@@ -245,15 +304,24 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       if (bgStarted) {
         console.log('Background tracking enabled via foreground service');
       }
+
+      backupTimerRef.current = setInterval(() => {
+        persistTripPoints();
+      }, POINTS_BACKUP_INTERVAL);
     } catch (e: any) {
       console.error('Location tracking error:', e.message);
     }
-  }, [addTripPoint]);
+  }, [addTripPoint, persistTripPoints]);
 
   const stopLocationTracking = useCallback(async () => {
     if (locationSubRef.current) {
       locationSubRef.current.remove();
       locationSubRef.current = null;
+    }
+
+    if (backupTimerRef.current) {
+      clearInterval(backupTimerRef.current);
+      backupTimerRef.current = null;
     }
 
     if (bgTrackingActiveRef.current) {
@@ -329,10 +397,19 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       setTripPoints([point]);
 
       await clearBackgroundPoints();
+      await clearTripPointsBackup();
 
       try {
         const trip = await startTrip(point);
         activeTripRef.current = trip;
+        await saveActiveTripId(trip.id);
+        await saveTripPointsBackup([{
+          latitude: point.latitude,
+          longitude: point.longitude,
+          timestamp: point.timestamp,
+          accuracy: point.accuracy,
+          speed: point.speed,
+        }]);
         await refreshDayRecord();
         return true;
       } catch (saveError: any) {
@@ -425,7 +502,10 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       tripPointsRef.current = [];
       setTripPoints([]);
       activeTripRef.current = null;
+
       await clearBackgroundPoints();
+      await clearActiveTripId();
+      await clearTripPointsBackup();
 
       await refreshDayRecord();
     } catch (e: any) {

@@ -23,7 +23,7 @@
     },
     "android": {
       "package": "com.rungtahospital.fieldtrack",
-       "config": {
+      "config": {
         "googleMaps": {
           "apiKey": "AIzaSyBsnV9XWBDuZxJQVDO5t-qZFqOSmdNX6vI"
         }
@@ -37,7 +37,9 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION"
+        "ACCESS_BACKGROUND_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "web": {
@@ -62,6 +64,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "4f2ebb00-9b39-49ed-907f-f8d967195b4a"
+      }
     }
   }
 }

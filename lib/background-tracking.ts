@@ -5,6 +5,8 @@ import { Platform } from 'react-native';
 
 const BACKGROUND_LOCATION_TASK = 'background-location-task';
 const BG_POINTS_KEY = 'bg_location_points';
+const ACTIVE_TRIP_KEY = 'active_trip_id';
+const TRIP_POINTS_KEY = 'trip_points_backup';
 
 export interface BGLocationPoint {
   latitude: number;
@@ -22,13 +24,21 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
   if (data) {
     const { locations } = data as { locations: Location.LocationObject[] };
     if (locations && locations.length > 0) {
-      const newPoints: BGLocationPoint[] = locations.map(loc => ({
-        latitude: loc.coords.latitude,
-        longitude: loc.coords.longitude,
-        timestamp: loc.timestamp,
-        accuracy: loc.coords.accuracy ?? undefined,
-        speed: loc.coords.speed ?? undefined,
-      }));
+      const newPoints: BGLocationPoint[] = locations
+        .filter(loc => {
+          if (loc.coords.accuracy && loc.coords.accuracy > 50) return false;
+          if (loc.coords.speed && loc.coords.speed > 140) return false;
+          return true;
+        })
+        .map(loc => ({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          timestamp: loc.timestamp,
+          accuracy: loc.coords.accuracy ?? undefined,
+          speed: loc.coords.speed ?? undefined,
+        }));
+
+      if (newPoints.length === 0) return;
 
       try {
         const existing = await AsyncStorage.getItem(BG_POINTS_KEY);
@@ -74,6 +84,8 @@ export async function startBackgroundTracking(): Promise<boolean> {
         notificationBody: 'Tracking your location for the active trip',
         notificationColor: '#0066FF',
       },
+      pausesUpdatesAutomatically: false,
+      activityType: Location.ActivityType.AutomotiveNavigation,
     });
 
     console.log('Background location tracking started');
@@ -113,5 +125,65 @@ export async function clearBackgroundPoints(): Promise<void> {
     await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify([]));
   } catch (e) {
     console.error('Failed to clear background points:', e);
+  }
+}
+
+export async function saveActiveTripId(tripId: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, tripId);
+  } catch (e) {
+    console.error('Failed to save active trip ID:', e);
+  }
+}
+
+export async function getActiveTripId(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+  } catch (e) {
+    console.error('Failed to get active trip ID:', e);
+    return null;
+  }
+}
+
+export async function clearActiveTripId(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
+  } catch (e) {
+    console.error('Failed to clear active trip ID:', e);
+  }
+}
+
+export async function saveTripPointsBackup(points: BGLocationPoint[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(points));
+  } catch (e) {
+    console.error('Failed to save trip points backup:', e);
+  }
+}
+
+export async function getTripPointsBackup(): Promise<BGLocationPoint[]> {
+  try {
+    const data = await AsyncStorage.getItem(TRIP_POINTS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (e) {
+    console.error('Failed to get trip points backup:', e);
+    return [];
+  }
+}
+
+export async function clearTripPointsBackup(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(TRIP_POINTS_KEY);
+  } catch (e) {
+    console.error('Failed to clear trip points backup:', e);
+  }
+}
+
+export async function isBackgroundTrackingActive(): Promise<boolean> {
+  if (Platform.OS === 'web') return false;
+  try {
+    return await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+  } catch {
+    return false;
   }
 }

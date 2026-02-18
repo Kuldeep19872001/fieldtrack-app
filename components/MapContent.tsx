@@ -100,7 +100,7 @@ export default function MapContent({
           />
         ))}
 
-        {livePoints.length >= 2 && (
+        {isCheckedIn && livePoints.length >= 2 && (
           <Polyline
             coordinates={livePoints}
             strokeColor={Colors.primary}
