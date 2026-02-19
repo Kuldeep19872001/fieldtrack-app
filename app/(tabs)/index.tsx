@@ -37,15 +37,37 @@ export default function DashboardScreen() {
 
   useEffect(() => {
     (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      setPermissionGranted(status === 'granted');
+      const { status: existing } = await Location.getForegroundPermissionsAsync();
+      if (existing === 'granted') {
+        setPermissionGranted(true);
+      }
     })();
   }, []);
 
+  const showLocationDisclosure = (): Promise<boolean> => {
+    return new Promise((resolve) => {
+      Alert.alert(
+        'Location Access Required',
+        'FieldTrack collects your GPS location during active work trips (check-in to check-out) to record your route, calculate distance traveled, and display your path on the map.\n\nBackground location is used to continue tracking even when the app is minimized. A notification will be shown whenever tracking is active.\n\nNo location data is collected when you are not on an active trip.',
+        [
+          { text: 'Deny', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Allow', onPress: () => resolve(true) },
+        ],
+        { cancelable: false }
+      );
+    });
+  };
+
   const handleCheckIn = async () => {
     if (!permissionGranted) {
-      Alert.alert('Location Required', 'Please enable location permissions to check in.');
-      return;
+      const accepted = await showLocationDisclosure();
+      if (!accepted) return;
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Denied', 'Location permission is required to track your trips. Please enable it in your device settings.');
+        return;
+      }
+      setPermissionGranted(true);
     }
     setCheckingIn(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
@@ -217,6 +239,35 @@ export default function DashboardScreen() {
           </View>
         )}
 
+        {dayRecord.visits.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Today's Visits</Text>
+            {dayRecord.visits.slice().reverse().map((v, i) => (
+              <Pressable
+                key={v.id || i}
+                style={styles.visitItem}
+                onPress={() => v.leadId ? router.push(`/lead/${v.leadId}`) : null}
+              >
+                <View style={[styles.visitIndex, { backgroundColor: Colors.primaryLight }]}>
+                  <Ionicons name="location" size={16} color={Colors.primary} />
+                </View>
+                <View style={styles.visitContent}>
+                  <Text style={styles.visitName}>{v.leadName}</Text>
+                  <View style={styles.visitAddrRow}>
+                    <Ionicons name="navigate-outline" size={12} color={Colors.textTertiary} />
+                    <Text style={styles.visitAddr} numberOfLines={2}>{v.address || 'No address'}</Text>
+                  </View>
+                  <View style={styles.visitMetaRow}>
+                    <Text style={styles.visitType}>{v.type}</Text>
+                    <Text style={styles.visitTime}>{formatClock(v.timestamp)}</Text>
+                  </View>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+              </Pressable>
+            ))}
+          </View>
+        )}
+
         {dayRecord.activities.length > 0 ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Recent Activity</Text>
@@ -328,6 +379,22 @@ const styles = StyleSheet.create({
   activityType: { fontSize: 13, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold' },
   activityDesc: { fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular', marginTop: 2 },
   activityTime: { fontSize: 11, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', marginTop: 2 },
+  visitItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.surface, borderRadius: 12, padding: 14,
+    marginBottom: 8, borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  visitIndex: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  visitContent: { flex: 1 },
+  visitName: { fontSize: 14, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold' },
+  visitAddrRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4, marginTop: 3 },
+  visitAddr: { flex: 1, fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular' },
+  visitMetaRow: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  visitType: { fontSize: 11, color: Colors.primary, fontFamily: 'Inter_500Medium' },
+  visitTime: { fontSize: 11, color: Colors.textTertiary, fontFamily: 'Inter_400Regular' },
   emptyActivity: { alignItems: 'center', paddingVertical: 40, gap: 8 },
   emptyText: { fontSize: 16, fontWeight: '600' as const, color: Colors.textSecondary, fontFamily: 'Inter_600SemiBold' },
   emptySubtext: { fontSize: 13, color: Colors.textTertiary, fontFamily: 'Inter_400Regular' },
