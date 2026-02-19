@@ -38,8 +38,9 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -53,25 +54,29 @@
         }
       ],
       "expo-font",
+      "expo-task-manager",
       "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#0066FF"
+        }
+      ],
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "FieldTrack needs background location to track your route while checked in."
+          "locationAlwaysAndWhenInUsePermission": "FieldTrack needs background location to track your route while checked in.",
+          "locationAlwaysPermission": "FieldTrack needs background location to track your route while checked in.",
+          "locationWhenInUsePermission": "FieldTrack needs your location to track your route during work shifts.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "router": {
-        "origin": "https://replit.com/"
-      },
-      "eas": {
-        "projectId": "4f2ebb00-9b39-49ed-907f-f8d967195b4a"
-      }
     }
   }
 }

@@ -9,9 +9,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import Colors from '@/constants/colors';
-import { getLeadById, saveLead, getDayRecord, addVisit, addActivity, getCallsForLead } from '@/lib/storage';
+import { getLeadById, saveLead, getDayRecord, addVisit, addActivity, getCallsForLead, getVisitsForLead } from '@/lib/storage';
 import { useTracking } from '@/lib/tracking-context';
-import type { Lead, LeadStage, Activity, CallLog } from '@/lib/types';
+import type { Lead, LeadStage, Activity, CallLog, Visit } from '@/lib/types';
 
 const STAGE_COLORS: Record<LeadStage, string> = {
   'New': Colors.stageNew,
@@ -29,6 +29,7 @@ export default function LeadDetailScreen() {
   const [lead, setLead] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [callHistory, setCallHistory] = useState<CallLog[]>([]);
+  const [visitHistory, setVisitHistory] = useState<Visit[]>([]);
   const [activeAction, setActiveAction] = useState<ActionType>(null);
   const [actionNotes, setActionNotes] = useState('');
   const [actionAddress, setActionAddress] = useState('');
@@ -55,6 +56,8 @@ export default function LeadDetailScreen() {
     setActivities(record.activities.filter(a => a.leadId === id).reverse());
     const calls = await getCallsForLead(id);
     setCallHistory(calls);
+    const visits = await getVisitsForLead(id);
+    setVisitHistory(visits);
   }, [id]);
 
   useEffect(() => {
@@ -402,6 +405,37 @@ export default function LeadDetailScreen() {
           <ActionButton icon="call-outline" label="Call" color={Colors.success} onPress={() => handleAction('call')} />
         </View>
 
+        {visitHistory.length > 0 ? (
+          <>
+            <Text style={styles.sectionTitle}>Visit History</Text>
+            {visitHistory.map((v, i) => (
+              <View key={v.id || i} style={styles.visitHistItem}>
+                <View style={[styles.visitHistIcon, { backgroundColor: Colors.primaryLight }]}>
+                  <Ionicons name="location" size={16} color={Colors.primary} />
+                </View>
+                <View style={styles.visitHistContent}>
+                  <View style={styles.visitHistHeader}>
+                    <Text style={styles.visitHistType}>{v.type}</Text>
+                    <Text style={styles.visitHistDate}>
+                      {new Date(v.timestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                    </Text>
+                  </View>
+                  <View style={styles.visitHistAddrRow}>
+                    <Ionicons name="navigate-outline" size={12} color={Colors.textTertiary} />
+                    <Text style={styles.visitHistAddr} numberOfLines={2}>{v.address || 'No address'}</Text>
+                  </View>
+                  {v.notes ? (
+                    <Text style={styles.visitHistNotes} numberOfLines={2}>{v.notes}</Text>
+                  ) : null}
+                  <Text style={styles.visitHistTime}>
+                    {new Date(v.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </>
+        ) : null}
+
         {callHistory.length > 0 ? (
           <>
             <Text style={styles.sectionTitle}>Call History</Text>
@@ -740,6 +774,23 @@ const styles = StyleSheet.create({
   actionBtn: { alignItems: 'center', gap: 6, width: 64 },
   actionIconBg: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   actionLabel: { fontSize: 11, color: Colors.textSecondary, fontFamily: 'Inter_500Medium', textAlign: 'center' },
+  visitHistItem: {
+    flexDirection: 'row', gap: 12, backgroundColor: Colors.surface,
+    borderRadius: 12, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: Colors.borderLight,
+  },
+  visitHistIcon: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  visitHistContent: { flex: 1 },
+  visitHistHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  visitHistType: { fontSize: 14, fontWeight: '600' as const, color: Colors.text, fontFamily: 'Inter_600SemiBold' },
+  visitHistDate: { fontSize: 12, color: Colors.textTertiary, fontFamily: 'Inter_400Regular' },
+  visitHistAddrRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 4, marginTop: 4 },
+  visitHistAddr: { flex: 1, fontSize: 12, color: Colors.textSecondary, fontFamily: 'Inter_400Regular' },
+  visitHistNotes: { fontSize: 12, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', marginTop: 4, fontStyle: 'italic' as const },
+  visitHistTime: { fontSize: 11, color: Colors.textTertiary, fontFamily: 'Inter_400Regular', marginTop: 4 },
   callItem: {
     flexDirection: 'row', gap: 12, backgroundColor: Colors.surface,
     borderRadius: 12, padding: 14, marginBottom: 8,

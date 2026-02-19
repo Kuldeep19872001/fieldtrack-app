@@ -510,6 +510,36 @@ export async function addVisit(visit: Omit<Visit, 'id'>, tripId?: string): Promi
   };
 }
 
+export async function getVisitsForLead(leadId: string): Promise<Visit[]> {
+  const userId = await getAuthUserId();
+  const { data, error } = await supabase
+    .from('visits')
+    .select('*, day_records!inner(user_id)')
+    .eq('lead_id', leadId)
+    .eq('day_records.user_id', userId)
+    .order('timestamp', { ascending: false })
+    .limit(20);
+
+  if (error) {
+    console.error('Get visits for lead error:', error.message);
+    return [];
+  }
+
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    leadId: r.lead_id,
+    leadName: r.lead_name,
+    type: r.type,
+    latitude: r.latitude,
+    longitude: r.longitude,
+    address: r.address,
+    notes: r.notes,
+    timestamp: r.timestamp,
+    duration: r.duration,
+    tripId: r.trip_id,
+  }));
+}
+
 export async function addCallLog(call: Omit<CallLog, 'id'>): Promise<CallLog> {
   const userId = await getAuthUserId();
   const today = new Date().toISOString().split('T')[0];
