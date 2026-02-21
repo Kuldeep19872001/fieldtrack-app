@@ -257,10 +257,11 @@ export async function endTrip(
   tripId: string,
   points: LocationPoint[],
   endLocation: LocationPoint,
-  snappedPolyline?: string | null
+  snappedPolyline?: string | null,
+  snappedDistance?: number | null
 ): Promise<Trip> {
   const encodedPoly = snappedPolyline || (points.length >= 2 ? encodePolyline(points) : null);
-  const totalDist = calculateTotalDistance(points);
+  const totalDist = snappedDistance != null ? snappedDistance : calculateTotalDistance(points);
 
   const { data: row, error } = await supabase
     .from('trips')

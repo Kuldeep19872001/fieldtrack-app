@@ -482,11 +482,20 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       }
 
       let snappedPolyline: string | null = null;
+      let snappedDistance: number | null = null;
       if (tripPointsRef.current.length >= 2) {
         try {
           const snappedPoints = await snapToRoads(tripPointsRef.current);
           if (snappedPoints.length >= 2) {
             snappedPolyline = encodePolyline(snappedPoints);
+            let dist = 0;
+            for (let i = 1; i < snappedPoints.length; i++) {
+              dist += calculateDistance(
+                snappedPoints[i - 1].latitude, snappedPoints[i - 1].longitude,
+                snappedPoints[i].latitude, snappedPoints[i].longitude
+              );
+            }
+            snappedDistance = Math.round(dist * 100) / 100;
           }
         } catch (e: any) {
           console.warn('Road snapping failed, using raw GPS points:', e.message);
@@ -497,7 +506,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         snappedPolyline = encodePolyline(tripPointsRef.current);
       }
 
-      await endTrip(activeTrip.id, tripPointsRef.current, endLocation, snappedPolyline);
+      await endTrip(activeTrip.id, tripPointsRef.current, endLocation, snappedPolyline, snappedDistance);
 
       tripPointsRef.current = [];
       setTripPoints([]);
