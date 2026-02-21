@@ -17,6 +17,9 @@ import { getLeads, getLeadTypes, addLeadType, createLead, createLeadsBatch, addV
 import { useTracking } from '@/lib/tracking-context';
 import type { Lead, LeadStage } from '@/lib/types';
 
+const LEAD_TYPE_OPTIONS = ['Doctor', 'Ambulance', 'Clinic', 'Other', 'Nursing Staff', 'KOL', 'Hospital'];
+const SOURCE_OPTIONS = ['Google Ads', 'Facebook Ads', 'Walk-in', 'Referral Doctor', 'Field Marketing Executive', 'Health Camp', 'JustDial / Practo', 'WhatsApp Campaign'];
+
 const STAGE_COLORS: Record<LeadStage, string> = {
   'New': Colors.stageNew,
   'In Process': Colors.stageInProcess,
@@ -130,6 +133,10 @@ export default function LeadsScreen() {
   const [leadTypes, setLeadTypes] = useState<string[]>([]);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
   const [newTypeName, setNewTypeName] = useState('');
+  const [showSourceDropdown, setShowSourceDropdown] = useState(false);
+  const [newSourceName, setNewSourceName] = useState('');
+  const [showManualType, setShowManualType] = useState(false);
+  const [showManualSource, setShowManualSource] = useState(false);
 
   const [formName, setFormName] = useState('');
   const [formSource, setFormSource] = useState('');
@@ -185,6 +192,16 @@ export default function LeadsScreen() {
       setFormLat(loc.coords.latitude);
       setFormLng(loc.coords.longitude);
       setGpsLabel(`${loc.coords.latitude.toFixed(6)}, ${loc.coords.longitude.toFixed(6)}`);
+      if (!formAddress) {
+        try {
+          const geocode = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+          if (geocode && geocode.length > 0) {
+            const g = geocode[0];
+            const parts = [g.name, g.street, g.district, g.city, g.region, g.postalCode].filter(Boolean);
+            if (parts.length > 0) setFormAddress(parts.join(', '));
+          }
+        } catch (_e) { /* skip geocoding */ }
+      }
     } catch (e) {
       Alert.alert('GPS Error', 'Could not get location. Please try again.');
     }
@@ -200,6 +217,12 @@ export default function LeadsScreen() {
     setFormLat(null);
     setFormLng(null);
     setGpsLabel('');
+    setShowTypeDropdown(false);
+    setShowSourceDropdown(false);
+    setShowManualType(false);
+    setShowManualSource(false);
+    setNewTypeName('');
+    setNewSourceName('');
     setShowAddLead(true);
     setTimeout(() => captureGPS(), 300);
   };
@@ -266,13 +289,23 @@ export default function LeadsScreen() {
       const lat = loc.coords.latitude;
       const lng = loc.coords.longitude;
 
+      let visitAddress = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      try {
+        const geocode = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+        if (geocode && geocode.length > 0) {
+          const g = geocode[0];
+          const parts = [g.name, g.street, g.district, g.city, g.region, g.postalCode].filter(Boolean);
+          if (parts.length > 0) visitAddress = parts.join(', ');
+        }
+      } catch (_e) { /* use coordinate fallback */ }
+
       await addVisit({
         leadId: visitState.leadId,
         leadName: visitState.leadName,
         type: 'Visit',
         latitude: lat,
         longitude: lng,
-        address: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        address: visitAddress,
         notes: visitState.notes.trim(),
         timestamp: new Date().toISOString(),
         duration: 0,
@@ -703,8 +736,65 @@ export default function LeadsScreen() {
                 value={formMobile} onChangeText={setFormMobile} keyboardType="phone-pad" />
 
               <Text style={styles.fieldLabel}>Source</Text>
-              <TextInput style={styles.modalInput} placeholder="e.g. Referral, Walk-in, Campaign" placeholderTextColor={Colors.textTertiary}
-                value={formSource} onChangeText={setFormSource} />
+              <Pressable
+                style={styles.dropdownTrigger}
+                onPress={() => { setShowSourceDropdown(!showSourceDropdown); setShowTypeDropdown(false); }}
+              >
+                <Text style={formSource ? styles.dropdownValue : styles.dropdownPlaceholder}>
+                  {formSource || 'Select source'}
+                </Text>
+                <Ionicons name={showSourceDropdown ? 'chevron-up' : 'chevron-down'} size={18} color={Colors.textTertiary} />
+              </Pressable>
+
+              {showSourceDropdown && (
+                <View style={styles.dropdownList}>
+                  {SOURCE_OPTIONS.map(s => (
+                    <Pressable
+                      key={s}
+                      style={[styles.dropdownItem, formSource === s && styles.dropdownItemActive]}
+                      onPress={() => {
+                        setFormSource(s);
+                        setShowSourceDropdown(false);
+                        setShowManualSource(false);
+                      }}
+                    >
+                      <Text style={[styles.dropdownItemText, formSource === s && { color: Colors.primary, fontWeight: '600' as const }]}>{s}</Text>
+                      {formSource === s && <Ionicons name="checkmark" size={16} color={Colors.primary} />}
+                    </Pressable>
+                  ))}
+                  <Pressable
+                    style={[styles.dropdownItem, showManualSource && styles.dropdownItemActive]}
+                    onPress={() => setShowManualSource(!showManualSource)}
+                  >
+                    <Text style={[styles.dropdownItemText, { color: Colors.accent, fontWeight: '500' as const }]}>Manual Entry</Text>
+                    <Ionicons name="create-outline" size={16} color={Colors.accent} />
+                  </Pressable>
+                  {showManualSource && (
+                    <View style={styles.addTypeRow}>
+                      <TextInput
+                        style={styles.addTypeInput}
+                        placeholder="Enter custom source..."
+                        placeholderTextColor={Colors.textTertiary}
+                        value={newSourceName}
+                        onChangeText={setNewSourceName}
+                      />
+                      <Pressable
+                        style={({ pressed }) => [styles.addTypeBtn, pressed && { opacity: 0.8 }]}
+                        onPress={() => {
+                          if (newSourceName.trim()) {
+                            setFormSource(newSourceName.trim());
+                            setNewSourceName('');
+                            setShowSourceDropdown(false);
+                            setShowManualSource(false);
+                          }
+                        }}
+                      >
+                        <Ionicons name="checkmark" size={18} color="#fff" />
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              )}
 
               <Text style={styles.fieldLabel}>Address</Text>
               <TextInput style={styles.modalInput} placeholder="Full address" placeholderTextColor={Colors.textTertiary}
@@ -713,7 +803,7 @@ export default function LeadsScreen() {
               <Text style={styles.fieldLabel}>Type</Text>
               <Pressable
                 style={styles.dropdownTrigger}
-                onPress={() => setShowTypeDropdown(!showTypeDropdown)}
+                onPress={() => { setShowTypeDropdown(!showTypeDropdown); setShowSourceDropdown(false); }}
               >
                 <Text style={formType ? styles.dropdownValue : styles.dropdownPlaceholder}>
                   {formType || 'Select type'}
@@ -723,34 +813,52 @@ export default function LeadsScreen() {
 
               {showTypeDropdown && (
                 <View style={styles.dropdownList}>
-                  {leadTypes.map(t => (
+                  {LEAD_TYPE_OPTIONS.map(t => (
                     <Pressable
                       key={t}
                       style={[styles.dropdownItem, formType === t && styles.dropdownItemActive]}
                       onPress={() => {
                         setFormType(t);
                         setShowTypeDropdown(false);
+                        setShowManualType(false);
                       }}
                     >
                       <Text style={[styles.dropdownItemText, formType === t && { color: Colors.primary, fontWeight: '600' as const }]}>{t}</Text>
                       {formType === t && <Ionicons name="checkmark" size={16} color={Colors.primary} />}
                     </Pressable>
                   ))}
-                  <View style={styles.addTypeRow}>
-                    <TextInput
-                      style={styles.addTypeInput}
-                      placeholder="Add new type..."
-                      placeholderTextColor={Colors.textTertiary}
-                      value={newTypeName}
-                      onChangeText={setNewTypeName}
-                    />
-                    <Pressable
-                      style={({ pressed }) => [styles.addTypeBtn, pressed && { opacity: 0.8 }]}
-                      onPress={handleAddNewType}
-                    >
-                      <Ionicons name="add" size={18} color="#fff" />
-                    </Pressable>
-                  </View>
+                  <Pressable
+                    style={[styles.dropdownItem, showManualType && styles.dropdownItemActive]}
+                    onPress={() => setShowManualType(!showManualType)}
+                  >
+                    <Text style={[styles.dropdownItemText, { color: Colors.accent, fontWeight: '500' as const }]}>Manual Entry</Text>
+                    <Ionicons name="create-outline" size={16} color={Colors.accent} />
+                  </Pressable>
+                  {showManualType && (
+                    <View style={styles.addTypeRow}>
+                      <TextInput
+                        style={styles.addTypeInput}
+                        placeholder="Enter custom type..."
+                        placeholderTextColor={Colors.textTertiary}
+                        value={newTypeName}
+                        onChangeText={setNewTypeName}
+                      />
+                      <Pressable
+                        style={({ pressed }) => [styles.addTypeBtn, pressed && { opacity: 0.8 }]}
+                        onPress={() => {
+                          if (newTypeName.trim()) {
+                            addLeadType(newTypeName.trim());
+                            setFormType(newTypeName.trim());
+                            setNewTypeName('');
+                            setShowTypeDropdown(false);
+                            setShowManualType(false);
+                          }
+                        }}
+                      >
+                        <Ionicons name="checkmark" size={18} color="#fff" />
+                      </Pressable>
+                    </View>
+                  )}
                 </View>
               )}
 

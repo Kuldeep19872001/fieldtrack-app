@@ -2,7 +2,7 @@
   "expo": {
     "name": "FieldTrack",
     "slug": "fieldtrack",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "fieldtrack",
@@ -18,12 +18,7 @@
       "bundleIdentifier": "com.rungtahospital.fieldtrack",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "FieldTrack needs your location to track your route during work shifts.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "FieldTrack needs background location to track your route while checked in.",
-        "NSLocationAlwaysUsageDescription": "FieldTrack needs background location to track your route while checked in.",
-        "UIBackgroundModes": [
-          "location",
-          "fetch"
-        ]
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "FieldTrack needs background location to track your route while checked in."
       }
     },
     "android": {
@@ -45,8 +40,7 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "POST_NOTIFICATIONS",
-        "WAKE_LOCK"
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -63,6 +57,13 @@
       "expo-task-manager",
       "expo-web-browser",
       [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#0066FF"
+        }
+      ],
+      [
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "FieldTrack needs background location to track your route while checked in.",
@@ -76,14 +77,6 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    },
-    "extra": {
-      "router": {
-        "origin": "https://replit.com/"
-      },
-      "eas": {
-        "projectId": "4f2ebb00-9b39-49ed-907f-f8d967195b4a"
-      }
     }
   }
 }

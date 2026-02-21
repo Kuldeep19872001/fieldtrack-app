@@ -11,6 +11,8 @@ import * as Location from 'expo-location';
 import Colors from '@/constants/colors';
 import { getLeadById, saveLead, getDayRecord, addVisit, addActivity, getCallsForLead, getVisitsForLead } from '@/lib/storage';
 import { useTracking } from '@/lib/tracking-context';
+import { useAuth } from '@/lib/auth-context';
+import { adminDeleteLead } from '@/lib/admin-storage';
 import type { Lead, LeadStage, Activity, CallLog, Visit } from '@/lib/types';
 
 const STAGE_COLORS: Record<LeadStage, string> = {
@@ -25,6 +27,7 @@ export default function LeadDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
   const { logVisit, logCall, logActivity, updateLeadStage, refreshDayRecord } = useTracking();
+  const { isAdmin } = useAuth();
 
   const [lead, setLead] = useState<Lead | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
@@ -310,6 +313,31 @@ export default function LeadDetailScreen() {
           </Pressable>
           <Text style={styles.navTitle}>Lead Details</Text>
           <View style={styles.navRight}>
+            {isAdmin && (
+              <Pressable
+                onPress={() => {
+                  if (!lead) return;
+                  Alert.alert('Delete Lead', `Permanently delete "${lead.name}" and all related data?`, [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Delete', style: 'destructive', onPress: async () => {
+                        try {
+                          await adminDeleteLead(lead.id);
+                          Alert.alert('Deleted', 'Lead has been removed.');
+                          router.back();
+                        } catch (e: any) {
+                          Alert.alert('Error', e.message);
+                        }
+                      },
+                    },
+                  ]);
+                }}
+                hitSlop={12}
+                style={styles.navIconBtn}
+              >
+                <Ionicons name="trash-outline" size={20} color={Colors.danger} />
+              </Pressable>
+            )}
             <Pressable onPress={handleLogInboundCall} hitSlop={12} style={styles.navIconBtn}>
               <Ionicons name="call-outline" size={20} color={Colors.warning} />
               <View style={styles.inboundBadge}>

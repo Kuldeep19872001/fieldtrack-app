@@ -6,8 +6,10 @@ import { BlurView } from "expo-blur";
 import { Platform, StyleSheet, useColorScheme, View } from "react-native";
 import { Ionicons } from '@expo/vector-icons';
 import Colors from "@/constants/colors";
+import { useAuth } from "@/lib/auth-context";
 
 function NativeTabLayout() {
+  const { isAdmin } = useAuth();
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -22,16 +24,27 @@ function NativeTabLayout() {
         <Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
         <Label>Leads</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="hrms">
+        <Icon sf={{ default: "person.badge.clock", selected: "person.badge.clock.fill" }} />
+        <Label>HRMS</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="summary">
         <Icon sf={{ default: "chart.bar", selected: "chart.bar.fill" }} />
         <Label>Summary</Label>
       </NativeTabs.Trigger>
+      {isAdmin && (
+        <NativeTabs.Trigger name="admin">
+          <Icon sf={{ default: "shield", selected: "shield.fill" }} />
+          <Label>Admin</Label>
+        </NativeTabs.Trigger>
+      )}
     </NativeTabs>
   );
 }
 
 function ClassicTabLayout() {
   const colorScheme = useColorScheme();
+  const { isAdmin } = useAuth();
   const isDark = colorScheme === "dark";
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
@@ -84,10 +97,25 @@ function ClassicTabLayout() {
         }}
       />
       <Tabs.Screen
+        name="hrms"
+        options={{
+          title: "HRMS",
+          tabBarIcon: ({ color, size }) => <Ionicons name="briefcase-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="summary"
         options={{
           title: "Summary",
           tabBarIcon: ({ color, size }) => <Ionicons name="bar-chart-outline" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="admin"
+        options={{
+          title: "Admin",
+          tabBarIcon: ({ color, size }) => <Ionicons name="shield-outline" size={size} color={color} />,
+          href: isAdmin ? undefined : null,
         }}
       />
     </Tabs>

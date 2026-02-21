@@ -1,11 +1,15 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, setCachedUserId } from './supabase';
 import type { UserProfile } from './types';
+
+const PROFILE_CACHE_KEY = 'cached_user_profile';
 
 interface AuthContextValue {
   user: UserProfile | null;
   isLoading: boolean;
   isAuthenticated: boolean;
+  isAdmin: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
   register: (email: string, password: string, name: string) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
@@ -13,11 +17,37 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+async function cacheProfile(profile: UserProfile): Promise<void> {
+  try {
+    await AsyncStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+  } catch (e) {
+    console.warn('Failed to cache profile:', e);
+  }
+}
+
+async function getCachedProfile(): Promise<UserProfile | null> {
+  try {
+    const data = await AsyncStorage.getItem(PROFILE_CACHE_KEY);
+    return data ? JSON.parse(data) : null;
+  } catch (e) {
+    console.warn('Failed to get cached profile:', e);
+    return null;
+  }
+}
+
+async function clearCachedProfile(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(PROFILE_CACHE_KEY);
+  } catch (e) {
+    console.warn('Failed to clear cached profile:', e);
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadProfile = async (userId: string, email: string) => {
+  const loadProfile = async (userId: string, email: string): Promise<UserProfile> => {
     setCachedUserId(userId);
 
     let profileName = email.split('@')[0];
@@ -33,7 +63,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         profileRole = data.role || profileRole;
       }
     } catch (e) {
-      console.warn('Profile load failed, using defaults');
+      const cached = await getCachedProfile();
+      if (cached && cached.id === userId) {
+        profileName = cached.name || profileName;
+        profileRole = cached.role || profileRole;
+      }
     }
 
     const profile: UserProfile = {
@@ -43,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       role: profileRole,
     };
     setUser(profile);
+    await cacheProfile(profile);
     return profile;
   };
 
@@ -53,9 +88,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (session?.user) {
           setCachedUserId(session.user.id);
           await loadProfile(session.user.id, session.user.email || '');
+        } else {
+          const cached = await getCachedProfile();
+          if (cached) {
+            try {
+              const { data: { session: refreshed } } = await supabase.auth.refreshSession();
+              if (refreshed?.user) {
+                setCachedUserId(refreshed.user.id);
+                await loadProfile(refreshed.user.id, refreshed.user.email || '');
+              } else {
+                setCachedUserId(cached.id);
+                setUser(cached);
+              }
+            } catch {
+              setCachedUserId(cached.id);
+              setUser(cached);
+            }
+          }
         }
       } catch (e) {
         console.error('Auth init error:', e);
+        const cached = await getCachedProfile();
+        if (cached) {
+          setCachedUserId(cached.id);
+          setUser(cached);
+        }
       } finally {
         setIsLoading(false);
       }
@@ -68,6 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else if (event === 'SIGNED_OUT') {
         setCachedUserId(null);
         setUser(null);
+        await clearCachedProfile();
       }
     });
 
@@ -134,18 +192,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setCachedUserId(null);
+    await clearCachedProfile();
     await supabase.auth.signOut();
     setUser(null);
   };
+
+  const isAdmin = !!user && user.role === 'manager';
 
   const value = useMemo(() => ({
     user,
     isLoading,
     isAuthenticated: !!user,
+    isAdmin,
     login,
     register,
     logout,
-  }), [user, isLoading]);
+  }), [user, isLoading, isAdmin]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

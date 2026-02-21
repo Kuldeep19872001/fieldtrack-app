@@ -6,13 +6,9 @@
       }
     },
     "production": {
-      "autoIncrement": true,
       "android": {
         "buildType": "app-bundle"
       }
     }
-  },
-  "cli": {
-    "appVersionSource": "remote"
   }
 }
