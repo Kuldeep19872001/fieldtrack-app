@@ -8,6 +8,10 @@ const BG_POINTS_KEY = 'bg_location_points';
 const ACTIVE_TRIP_KEY = 'active_trip_id';
 const TRIP_POINTS_KEY = 'trip_points_backup';
 
+// Constants for filtering (Synced with TrackingProvider)
+const MAX_ACCURACY_METERS = 30; // Anything above 30 is likely a tower guess
+const MAX_SPEED_MPS = 45;      // Approx 160km/h - filters GPS "teleportation" glitches
+
 export interface BGLocationPoint {
   latitude: number;
   longitude: number;
@@ -16,18 +20,27 @@ export interface BGLocationPoint {
   speed?: number;
 }
 
+// Global variable to prevent concurrent write collisions within the task
+let isProcessing = false;
+
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) => {
   if (error) {
     console.error('Background location task error:', error);
     return;
   }
-  if (data) {
+  
+  if (data && !isProcessing) {
+    isProcessing = true;
     const { locations } = data as { locations: Location.LocationObject[] };
+    
     if (locations && locations.length > 0) {
-      const newPoints: BGLocationPoint[] = locations
+      // 1. Filter points immediately for quality
+      const validNewPoints: BGLocationPoint[] = locations
         .filter(loc => {
-          if (loc.coords.accuracy && loc.coords.accuracy > 50) return false;
-          if (loc.coords.speed && loc.coords.speed > 140) return false;
+          const acc = loc.coords.accuracy;
+          const speed = loc.coords.speed;
+          if (acc && acc > MAX_ACCURACY_METERS) return false;
+          if (speed && speed > MAX_SPEED_MPS) return false;
           return true;
         })
         .map(loc => ({
@@ -38,17 +51,26 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
           speed: loc.coords.speed ?? undefined,
         }));
 
-      if (newPoints.length === 0) return;
+      if (validNewPoints.length > 0) {
+        try {
+          // 2. Use a "Get-Modify-Set" pattern with error handling
+          const existingData = await AsyncStorage.getItem(BG_POINTS_KEY);
+          const currentPoints: BGLocationPoint[] = existingData ? JSON.parse(existingData) : [];
+          
+          // Deduplicate based on timestamp to prevent double-logging
+          const lastTimestamp = currentPoints.length > 0 ? currentPoints[currentPoints.length - 1].timestamp : 0;
+          const uniqueNewPoints = validNewPoints.filter(p => p.timestamp > lastTimestamp);
 
-      try {
-        const existing = await AsyncStorage.getItem(BG_POINTS_KEY);
-        const allPoints: BGLocationPoint[] = existing ? JSON.parse(existing) : [];
-        allPoints.push(...newPoints);
-        await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify(allPoints));
-      } catch (e) {
-        console.error('Failed to save background location points:', e);
+          if (uniqueNewPoints.length > 0) {
+            const updatedPoints = [...currentPoints, ...uniqueNewPoints];
+            await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify(updatedPoints));
+          }
+        } catch (e) {
+          console.error('Failed to sync BG points to storage:', e);
+        }
       }
     }
+    isProcessing = false;
   }
 });
 
@@ -61,7 +83,7 @@ export async function startBackgroundTracking(): Promise<boolean> {
 
     const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
     if (bgStatus !== 'granted') {
-      console.warn('Background location permission not granted');
+      console.warn('Background location permission denied');
       return false;
     }
 
@@ -70,52 +92,51 @@ export async function startBackgroundTracking(): Promise<boolean> {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
     }
 
+    // Reset background points buffer when starting a new trip
     await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify([]));
 
     await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
       accuracy: Location.Accuracy.High,
       timeInterval: 5000,
-      distanceInterval: 5,
-      deferredUpdatesInterval: 5000,
-      deferredUpdatesDistance: 5,
+      distanceInterval: 10, // Increased slightly to reduce jitter while stationary
+      deferredUpdatesInterval: 10000,
+      deferredUpdatesDistance: 10,
       showsBackgroundLocationIndicator: true,
       foregroundService: {
-        notificationTitle: 'FieldTrack',
-        notificationBody: 'Tracking your location for the active trip',
+        notificationTitle: 'FieldTrack Active',
+        notificationBody: 'Recording your trip in the background',
         notificationColor: '#0066FF',
       },
       pausesUpdatesAutomatically: false,
       activityType: Location.ActivityType.AutomotiveNavigation,
     });
 
-    console.log('Background location tracking started');
     return true;
   } catch (e: any) {
-    console.error('Failed to start background tracking:', e.message);
+    console.error('Start background tracking error:', e.message);
     return false;
   }
 }
 
 export async function stopBackgroundTracking(): Promise<void> {
   if (Platform.OS === 'web') return;
-
   try {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
     if (isRegistered) {
       await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-      console.log('Background location tracking stopped');
     }
   } catch (e: any) {
-    console.error('Failed to stop background tracking:', e.message);
+    console.error('Stop background tracking error:', e.message);
   }
 }
+
+// --- STORAGE HELPERS (Standardized for TrackingProvider) ---
 
 export async function getBackgroundPoints(): Promise<BGLocationPoint[]> {
   try {
     const data = await AsyncStorage.getItem(BG_POINTS_KEY);
     return data ? JSON.parse(data) : [];
-  } catch (e) {
-    console.error('Failed to get background points:', e);
+  } catch {
     return [];
   }
 }
@@ -123,67 +144,42 @@ export async function getBackgroundPoints(): Promise<BGLocationPoint[]> {
 export async function clearBackgroundPoints(): Promise<void> {
   try {
     await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify([]));
-  } catch (e) {
-    console.error('Failed to clear background points:', e);
-  }
+  } catch (e) {}
 }
 
 export async function saveActiveTripId(tripId: string): Promise<void> {
-  try {
-    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, tripId);
-  } catch (e) {
-    console.error('Failed to save active trip ID:', e);
-  }
+  await AsyncStorage.setItem(ACTIVE_TRIP_KEY, tripId);
 }
 
 export async function getActiveTripId(): Promise<string | null> {
-  try {
-    return await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
-  } catch (e) {
-    console.error('Failed to get active trip ID:', e);
-    return null;
-  }
+  return await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
 }
 
 export async function clearActiveTripId(): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
-  } catch (e) {
-    console.error('Failed to clear active trip ID:', e);
-  }
+  await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
 }
 
 export async function saveTripPointsBackup(points: BGLocationPoint[]): Promise<void> {
   try {
+    // We stringify once here to ensure data integrity
     await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(points));
-  } catch (e) {
-    console.error('Failed to save trip points backup:', e);
-  }
+  } catch (e) {}
 }
 
 export async function getTripPointsBackup(): Promise<BGLocationPoint[]> {
   try {
     const data = await AsyncStorage.getItem(TRIP_POINTS_KEY);
     return data ? JSON.parse(data) : [];
-  } catch (e) {
-    console.error('Failed to get trip points backup:', e);
+  } catch {
     return [];
   }
 }
 
 export async function clearTripPointsBackup(): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(TRIP_POINTS_KEY);
-  } catch (e) {
-    console.error('Failed to clear trip points backup:', e);
-  }
+  await AsyncStorage.removeItem(TRIP_POINTS_KEY);
 }
 
 export async function isBackgroundTrackingActive(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
-  try {
-    return await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
-  } catch {
-    return false;
-  }
+  return await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
 }

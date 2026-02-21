@@ -18,7 +18,12 @@
       "bundleIdentifier": "com.rungtahospital.fieldtrack",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "FieldTrack needs your location to track your route during work shifts.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "FieldTrack needs background location to track your route while checked in."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "FieldTrack needs background location to track your route while checked in.",
+        "NSLocationAlwaysUsageDescription": "FieldTrack needs background location to track your route while checked in.",
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
       }
     },
     "android": {
@@ -41,11 +46,7 @@
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_BACKGROUND_LOCATION",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_LOCATION"
+        "WAKE_LOCK"
       ]
     },
     "web": {

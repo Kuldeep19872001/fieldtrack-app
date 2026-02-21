@@ -1,9 +1,18 @@
-export function encodePolyline(points: Array<{latitude: number, longitude: number}>): string {
+import { LocationPoint } from './types';
+
+/**
+ * Encodes an array of coordinates into a compressed string.
+ * Uses the Google Encoded Polyline Algorithm (5 decimal places).
+ */
+export function encodePolyline(points: Array<{latitude: number, longitude: number}> | LocationPoint[]): string {
+  if (!points || points.length === 0) return '';
+  
   let encoded = '';
   let prevLat = 0;
   let prevLng = 0;
 
   for (const point of points) {
+    // 1e5 = 5 decimal places (standard for Google Maps)
     const lat = Math.round(point.latitude * 1e5);
     const lng = Math.round(point.longitude * 1e5);
 
@@ -37,25 +46,35 @@ function encodeValue(value: number): string {
   return encoded;
 }
 
+/**
+ * Decodes an encoded string back into an array of coordinates.
+ */
 export function decodePolyline(encoded: string): Array<{latitude: number, longitude: number}> {
+  if (!encoded) return [];
+  
   const points: Array<{latitude: number, longitude: number}> = [];
   let lat = 0;
   let lng = 0;
   let i = 0;
 
-  while (i < encoded.length) {
-    const dLat = decodeValue(encoded, i);
-    i = dLat.nextIndex;
-    lat += dLat.value;
+  try {
+    while (i < encoded.length) {
+      const dLat = decodeValue(encoded, i);
+      i = dLat.nextIndex;
+      lat += dLat.value;
 
-    const dLng = decodeValue(encoded, i);
-    i = dLng.nextIndex;
-    lng += dLng.value;
+      const dLng = decodeValue(encoded, i);
+      i = dLng.nextIndex;
+      lng += dLng.value;
 
-    points.push({
-      latitude: lat / 1e5,
-      longitude: lng / 1e5,
-    });
+      points.push({
+        latitude: lat / 1e5,
+        longitude: lng / 1e5,
+      });
+    }
+  } catch (e) {
+    console.error('Polyline decoding failed:', e);
+    return [];
   }
 
   return points;

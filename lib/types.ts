@@ -21,12 +21,16 @@ export interface Lead {
   locationLng: number | null;
 }
 
+/**
+ * Updated to include accuracy and speed for road-snapping 
+ * and diagnostic health checks.
+ */
 export interface LocationPoint {
   latitude: number;
   longitude: number;
   timestamp: number;
-  accuracy?: number;
-  speed?: number;
+  accuracy?: number; 
+  speed?: number | null;
 }
 
 export interface Trip {
@@ -44,6 +48,9 @@ export interface Trip {
   pointCount: number;
 }
 
+/**
+ * Linked to tripId to allow route-specific visit reporting.
+ */
 export interface Visit {
   id: string;
   leadId: string;
@@ -55,7 +62,7 @@ export interface Visit {
   notes: string;
   timestamp: string;
   duration: number;
-  tripId?: string;
+  tripId?: string; // Links visit to the specific path taken
 }
 
 export interface CallLog {
@@ -75,8 +82,12 @@ export interface Activity {
   type: 'First Follow-up' | 'Visit' | 'Re-visit' | 'Note' | 'Call';
   description: string;
   timestamp: string;
+  tripId?: string; // Optional context for where the activity occurred
 }
 
+/**
+ * The unified daily view for the dashboard and reports.
+ */
 export interface DayRecord {
   date: string;
   trips: Trip[];
