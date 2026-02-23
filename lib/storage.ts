@@ -2,27 +2,39 @@ import { supabase, getCachedUserId } from './supabase';
 import { encodePolyline } from './polyline';
 import type { Lead, Trip, LocationPoint, Visit, CallLog, Activity, DayRecord } from './types';
 
-async function getAuthUserId(): Promise<string> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (session?.user) {
-    return session.user.id;
-  }
+let _cachedAuthUserId: string | null = null;
 
+async function getAuthUserId(): Promise<string> {
+  if (_cachedAuthUserId) return _cachedAuthUserId;
+  
   const cached = getCachedUserId();
   if (cached) {
-    console.log('Using cached user ID (session was empty)');
+    _cachedAuthUserId = cached;
     return cached;
+  }
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.user) {
+    _cachedAuthUserId = session.user.id;
+    return session.user.id;
   }
 
   try {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (user) return user.id;
+    if (user) {
+      _cachedAuthUserId = user.id;
+      return user.id;
+    }
     if (userError) console.error('getUser error:', userError.message);
   } catch (e: any) {
     console.error('getUser exception:', e.message);
   }
 
   throw new Error('Please sign in again to continue');
+}
+
+export function clearCachedAuthUserId() {
+  _cachedAuthUserId = null;
 }
 
 export async function getLeadTypes(): Promise<string[]> {
@@ -232,13 +244,14 @@ function transformTrip(row: any): Trip {
 export async function startTrip(location: LocationPoint): Promise<Trip> {
   const userId = await getAuthUserId();
   const today = new Date().toISOString().split('T')[0];
+  const now = new Date().toISOString();
 
   const { data: row, error } = await supabase
     .from('trips')
     .insert({
       user_id: userId,
       date: today,
-      start_time: new Date().toISOString(),
+      start_time: now,
       start_lat: location.latitude,
       start_lng: location.longitude,
     })
@@ -248,6 +261,26 @@ export async function startTrip(location: LocationPoint): Promise<Trip> {
   if (error) {
     console.error('Start trip error:', error.message, error.details);
     throw new Error('Failed to start trip: ' + error.message);
+  }
+
+  try {
+    const dayRecord = await getOrCreateDayRecord(userId, today);
+    const updateData: any = {};
+    if (!dayRecord.check_in_time) {
+      updateData.check_in_time = now;
+      updateData.check_in_lat = location.latitude;
+      updateData.check_in_lng = location.longitude;
+      updateData.check_in_timestamp = Math.round(location.timestamp);
+    }
+    updateData.trip_count = (dayRecord.trip_count || 0) + 1;
+    updateData.status = 'Present';
+
+    await supabase
+      .from('day_records')
+      .update(updateData)
+      .eq('id', dayRecord.id);
+  } catch (e: any) {
+    console.warn('Update day record on check-in failed:', e.message);
   }
 
   return transformTrip(row);
@@ -260,13 +293,15 @@ export async function endTrip(
   snappedPolyline?: string | null,
   snappedDistance?: number | null
 ): Promise<Trip> {
+  const userId = await getAuthUserId();
   const encodedPoly = snappedPolyline || (points.length >= 2 ? encodePolyline(points) : null);
   const totalDist = snappedDistance != null ? snappedDistance : calculateTotalDistance(points);
+  const now = new Date().toISOString();
 
   const { data: row, error } = await supabase
     .from('trips')
     .update({
-      end_time: new Date().toISOString(),
+      end_time: now,
       end_lat: endLocation.latitude,
       end_lng: endLocation.longitude,
       encoded_polyline: encodedPoly,
@@ -280,6 +315,75 @@ export async function endTrip(
   if (error) {
     console.error('End trip error:', error.message, error.details);
     throw new Error('Failed to end trip: ' + error.message);
+  }
+
+  try {
+    const today = row.date || new Date().toISOString().split('T')[0];
+    const dayRecord = await getOrCreateDayRecord(userId, today);
+
+    const { data: allTrips } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('date', today);
+
+    const trips = allTrips || [];
+    let dayTotalDistance = 0;
+    let dayWorkingMinutes = 0;
+
+    for (const t of trips) {
+      dayTotalDistance += t.total_distance || 0;
+      if (t.start_time && t.end_time) {
+        const start = new Date(t.start_time).getTime();
+        const end = new Date(t.end_time).getTime();
+        dayWorkingMinutes += Math.floor((end - start) / 60000);
+      }
+    }
+
+    const { data: visitsData } = await supabase
+      .from('visits')
+      .select('id')
+      .eq('day_record_id', dayRecord.id);
+
+    const { data: callsData } = await supabase
+      .from('calls')
+      .select('id')
+      .eq('day_record_id', dayRecord.id);
+
+    let status = 'Absent';
+    if (dayWorkingMinutes >= 480) status = 'Present';
+    else if (dayWorkingMinutes >= 180) status = 'Half Day';
+    else if (dayWorkingMinutes > 0) status = 'Absent';
+
+    const { data: leaveReqs } = await supabase
+      .from('leave_requests')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'Approved')
+      .lte('from_date', today)
+      .gte('to_date', today)
+      .limit(1);
+
+    if (leaveReqs && leaveReqs.length > 0) {
+      status = 'Leave';
+    }
+
+    await supabase
+      .from('day_records')
+      .update({
+        check_out_time: now,
+        check_out_lat: endLocation.latitude,
+        check_out_lng: endLocation.longitude,
+        total_distance: dayTotalDistance,
+        working_minutes: dayWorkingMinutes,
+        trip_count: trips.length,
+        visit_count: visitsData?.length || 0,
+        call_count: callsData?.length || 0,
+        status,
+      })
+      .eq('id', dayRecord.id);
+  } catch (e: any) {
+    console.warn('Update day record on check-out failed:', e.message);
   }
 
   return transformTrip(row);

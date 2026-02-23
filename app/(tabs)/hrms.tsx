@@ -12,9 +12,8 @@ import {
   AttendanceRecord, MonthlySummary, LeaveBalance, LeaveRequest, getLeaveApprovers,
 } from '@/lib/hrms-storage';
 
-const SERVER_URL = process.env.EXPO_PUBLIC_DOMAIN
-  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
-  : 'http://localhost:5000';
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL
+  || (process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : 'http://localhost:5000');
 
 const LEAVE_TYPES = ['CL', 'PL', 'SL', 'RH', 'LWP'];
 const LEAVE_LABELS: Record<string, string> = {
@@ -102,7 +101,7 @@ export default function HRMSScreen() {
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
 
-  const futureDates = generateFutureDates(90);
+  const futureDates = React.useMemo(() => generateFutureDates(90), []);
 
   const loadData = useCallback(async () => {
     try {

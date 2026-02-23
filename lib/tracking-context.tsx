@@ -279,7 +279,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }, 0);
         const activeMinutes = Math.floor((Date.now() - start) / 60000);
         setWorkingMinutes(baseMinutes + activeMinutes);
-      }, 10000);
+      }, 30000);
 
       const start = new Date(dayRecord.activeTrip.startTime).getTime();
       const baseMinutes = dayRecord.trips
@@ -298,8 +298,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const addTripPoint = useCallback((point: LocationPoint) => {
     if (!shouldAcceptPoint(point, tripPointsRef.current)) return;
-    tripPointsRef.current = [...tripPointsRef.current, point];
-    setTripPoints([...tripPointsRef.current]);
+    tripPointsRef.current.push(point);
+    setTripPoints(prev => [...prev, point]);
   }, [shouldAcceptPoint]);
 
   const startLocationTracking = useCallback(async () => {

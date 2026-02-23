@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, setCachedUserId } from './supabase';
+import { clearCachedAuthUserId } from './storage';
 import type { UserProfile } from './types';
 
 const PROFILE_CACHE_KEY = 'cached_user_profile';
@@ -83,32 +84,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
+      const cached = await getCachedProfile();
+
+      const authTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) {
+        const sessionResult = await Promise.race([
+          supabase.auth.getSession(),
+          authTimeout.then(() => null),
+        ]);
+
+        if (sessionResult && sessionResult.data?.session?.user) {
+          const session = sessionResult.data.session;
           setCachedUserId(session.user.id);
           await loadProfile(session.user.id, session.user.email || '');
-        } else {
-          const cached = await getCachedProfile();
-          if (cached) {
-            try {
-              const { data: { session: refreshed } } = await supabase.auth.refreshSession();
-              if (refreshed?.user) {
-                setCachedUserId(refreshed.user.id);
-                await loadProfile(refreshed.user.id, refreshed.user.email || '');
-              } else {
-                setCachedUserId(cached.id);
-                setUser(cached);
-              }
-            } catch {
-              setCachedUserId(cached.id);
-              setUser(cached);
+        } else if (cached) {
+          setCachedUserId(cached.id);
+          setUser(cached);
+
+          supabase.auth.refreshSession().then(({ data: { session: refreshed } }) => {
+            if (refreshed?.user) {
+              setCachedUserId(refreshed.user.id);
+              loadProfile(refreshed.user.id, refreshed.user.email || '');
             }
-          }
+          }).catch(() => {});
         }
       } catch (e) {
         console.error('Auth init error:', e);
-        const cached = await getCachedProfile();
         if (cached) {
           setCachedUserId(cached.id);
           setUser(cached);
@@ -124,6 +126,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await loadProfile(session.user.id, session.user.email || '');
       } else if (event === 'SIGNED_OUT') {
         setCachedUserId(null);
+        clearCachedAuthUserId();
         setUser(null);
         await clearCachedProfile();
       }
@@ -192,6 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     setCachedUserId(null);
+    clearCachedAuthUserId();
     await clearCachedProfile();
     await supabase.auth.signOut();
     setUser(null);

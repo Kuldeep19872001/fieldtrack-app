@@ -80,8 +80,8 @@ export default function SummaryScreen() {
       let totalDist = 0;
       let totalMinutes = 0;
 
-      for (const date of dates) {
-        const rec = await getDayRecord(date);
+      const records = await Promise.all(dates.map(date => getDayRecord(date)));
+      for (const rec of records) {
         if (rec) {
           allTrips.push(...rec.trips);
           allVisits.push(...rec.visits);

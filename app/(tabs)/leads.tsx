@@ -17,6 +17,24 @@ import { getLeads, getLeadTypes, addLeadType, createLead, createLeadsBatch, addV
 import { useTracking } from '@/lib/tracking-context';
 import type { Lead, LeadStage } from '@/lib/types';
 
+function arrayToBase64(uint8: Uint8Array): string {
+  let binary = '';
+  const len = uint8.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
+}
+
+function writeWorkbookToBase64(wb: XLSX.WorkBook): string {
+  try {
+    const result = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+    if (result) return result;
+  } catch (_e) {}
+  const arrayOut = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+  return arrayToBase64(new Uint8Array(arrayOut));
+}
+
 const LEAD_TYPE_OPTIONS = ['Doctor', 'Ambulance', 'Clinic', 'Other', 'Nursing Staff', 'KOL', 'Hospital'];
 const SOURCE_OPTIONS = ['Google Ads', 'Facebook Ads', 'Walk-in', 'Referral Doctor', 'Field Marketing Executive', 'Health Camp', 'JustDial / Practo', 'WhatsApp Campaign'];
 
@@ -39,7 +57,7 @@ interface AddVisitState {
   capturing: boolean;
 }
 
-function LeadCard({ lead, onAddVisit, onCall }: { lead: Lead; onAddVisit: (lead: Lead) => void; onCall: (lead: Lead) => void }) {
+const LeadCard = React.memo(function LeadCard({ lead, onAddVisit, onCall }: { lead: Lead; onAddVisit: (lead: Lead) => void; onCall: (lead: Lead) => void }) {
   const stageColor = STAGE_COLORS[lead.stage];
   const stageBg = STAGE_BG[lead.stage];
 
@@ -120,7 +138,7 @@ function LeadCard({ lead, onAddVisit, onCall }: { lead: Lead; onAddVisit: (lead:
       </View>
     </Pressable>
   );
-}
+});
 
 export default function LeadsScreen() {
   const insets = useSafeAreaInsets();
@@ -452,8 +470,6 @@ export default function LeadsScreen() {
       ];
       ws['!cols'] = colWidths;
 
-      const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-
       if (Platform.OS === 'web') {
         const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
         const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -465,8 +481,15 @@ export default function LeadsScreen() {
         URL.revokeObjectURL(url);
         Alert.alert('Exported', `${leads.length} leads exported successfully.`);
       } else {
+        const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+        if (!cacheDir) {
+          Alert.alert('Error', 'Storage is not available on this device.');
+          setExporting(false);
+          return;
+        }
+        const wbout = writeWorkbookToBase64(wb);
         const fileName = `leads_${new Date().toISOString().split('T')[0]}.xlsx`;
-        const filePath = `${FileSystem.cacheDirectory}${fileName}`;
+        const filePath = `${cacheDir}${fileName}`;
         await FileSystem.writeAsStringAsync(filePath, wbout, { encoding: FileSystem.EncodingType.Base64 });
 
         const canShare = await Sharing.isAvailableAsync();
@@ -474,6 +497,7 @@ export default function LeadsScreen() {
           await Sharing.shareAsync(filePath, {
             mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             dialogTitle: 'Export Leads',
+            UTI: 'org.openxmlformats.spreadsheetml.sheet',
           });
         } else {
           Alert.alert('Exported', `File saved: ${fileName}`);
@@ -601,23 +625,34 @@ export default function LeadsScreen() {
         a.click();
         URL.revokeObjectURL(url);
       } else {
-        const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-        const filePath = `${FileSystem.cacheDirectory}leads_import_template.xlsx`;
+        const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+        if (!cacheDir) {
+          Alert.alert('Error', 'Storage is not available on this device.');
+          return;
+        }
+        const wbout = writeWorkbookToBase64(wb);
+        const filePath = `${cacheDir}leads_import_template.xlsx`;
         await FileSystem.writeAsStringAsync(filePath, wbout, { encoding: FileSystem.EncodingType.Base64 });
+        const fileInfo = await FileSystem.getInfoAsync(filePath);
+        if (!fileInfo.exists) {
+          Alert.alert('Error', 'Failed to save template file.');
+          return;
+        }
         const canShare = await Sharing.isAvailableAsync();
         if (canShare) {
           await Sharing.shareAsync(filePath, {
             mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             dialogTitle: 'Download Template',
+            UTI: 'org.openxmlformats.spreadsheetml.sheet',
           });
         } else {
-          Alert.alert('Template Saved', 'Template file saved to cache.');
+          Alert.alert('Template Ready', 'Template file has been generated but sharing is not available on this device.');
         }
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       console.error('Template download error:', e);
-      Alert.alert('Error', 'Could not generate template file.');
+      Alert.alert('Error', e?.message || 'Could not generate template file.');
     }
   };
 

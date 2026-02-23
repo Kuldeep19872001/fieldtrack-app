@@ -65,9 +65,24 @@ CREATE TABLE IF NOT EXISTS day_records (
   check_in_lat DOUBLE PRECISION NULL,
   check_in_lng DOUBLE PRECISION NULL,
   check_in_timestamp BIGINT NULL,
+  check_out_lat DOUBLE PRECISION NULL,
+  check_out_lng DOUBLE PRECISION NULL,
   total_distance DOUBLE PRECISION DEFAULT 0,
+  working_minutes INTEGER DEFAULT 0,
+  trip_count INTEGER DEFAULT 0,
+  visit_count INTEGER DEFAULT 0,
+  call_count INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'Absent',
   UNIQUE(user_id, date)
 );
+
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS check_out_lat DOUBLE PRECISION NULL;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS check_out_lng DOUBLE PRECISION NULL;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS working_minutes INTEGER DEFAULT 0;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS trip_count INTEGER DEFAULT 0;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS visit_count INTEGER DEFAULT 0;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS call_count INTEGER DEFAULT 0;
+ALTER TABLE day_records ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Absent';
 
 -- Route points table
 CREATE TABLE IF NOT EXISTS route_points (
