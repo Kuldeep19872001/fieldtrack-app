@@ -2,7 +2,7 @@
   "expo": {
     "name": "FieldTrack",
     "slug": "fieldtrack",
-    "version": "1.0.0",
+    "version": "1.0.6",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "fieldtrack",
@@ -22,7 +22,7 @@
       }
     },
     "android": {
-      "versionCode": 5,
+      "versionCode": 6,
       "package": "com.rungtahospital.fieldtrack",
       "config": {
         "googleMaps": {
