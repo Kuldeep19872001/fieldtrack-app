@@ -7,6 +7,8 @@ const BACKGROUND_LOCATION_TASK = 'background-location-task';
 const BG_POINTS_KEY = 'bg_location_points';
 const ACTIVE_TRIP_KEY = 'active_trip_id';
 const TRIP_POINTS_KEY = 'trip_points_backup';
+const MAX_BG_POINTS = 3000;
+const MAX_BACKUP_POINTS = 5000;
 
 export interface BGLocationPoint {
   latitude: number;
@@ -42,8 +44,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
 
       try {
         const existing = await AsyncStorage.getItem(BG_POINTS_KEY);
-        const allPoints: BGLocationPoint[] = existing ? JSON.parse(existing) : [];
+        let allPoints: BGLocationPoint[] = existing ? JSON.parse(existing) : [];
         allPoints.push(...newPoints);
+        if (allPoints.length > MAX_BG_POINTS) {
+          allPoints = allPoints.slice(-MAX_BG_POINTS);
+        }
         await AsyncStorage.setItem(BG_POINTS_KEY, JSON.stringify(allPoints));
       } catch (e) {
         console.error('Failed to save background location points:', e);
@@ -155,7 +160,11 @@ export async function clearActiveTripId(): Promise<void> {
 
 export async function saveTripPointsBackup(points: BGLocationPoint[]): Promise<void> {
   try {
-    await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(points));
+    let toSave = points;
+    if (toSave.length > MAX_BACKUP_POINTS) {
+      toSave = toSave.slice(-MAX_BACKUP_POINTS);
+    }
+    await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(toSave));
   } catch (e) {
     console.error('Failed to save trip points backup:', e);
   }

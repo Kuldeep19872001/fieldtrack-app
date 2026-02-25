@@ -6,7 +6,6 @@ import {
   addVisit, addCallLog, addActivity,
   getLeadById, saveLead, calculateDistance, saveRoutePoints,
 } from './storage';
-import { ensureValidSession } from './supabase';
 import { snapToRoads } from './roads-api';
 import { encodePolyline } from './polyline';
 import {
@@ -23,12 +22,14 @@ const MAX_ACCURACY_METERS = 25;
 const MAX_SPEED_MPS = 140;
 const TRACKING_TIME_INTERVAL = 5000;
 const TRACKING_DISTANCE_INTERVAL = 15;
-const POINTS_BACKUP_INTERVAL = 30000;
+const POINTS_BACKUP_INTERVAL = 60000;
 const STATIONARY_RADIUS_METERS = 30;
 const STATIONARY_BREAK_METERS = 30;
 const SHARP_ANGLE_THRESHOLD = 140;
 const SHARP_ANGLE_MAX_DIST = 60;
 const JUMP_THRESHOLD_METERS = 150;
+const MAX_MEMORY_POINTS = 10000;
+const STATE_UPDATE_INTERVAL = 10000;
 
 function getBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const toRad = Math.PI / 180;
@@ -113,10 +114,12 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stateUpdateTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeTripRef = useRef<Trip | null>(null);
   const tripPointsRef = useRef<LocationPoint[]>([]);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const bgTrackingActiveRef = useRef(false);
+  const tripPointsDirtyRef = useRef(false);
 
   const isCheckedIn = !!dayRecord.activeTrip;
   const isTracking = isCheckedIn;
@@ -240,6 +243,10 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        if (workingPoints.length > MAX_MEMORY_POINTS) {
+          workingPoints.splice(0, workingPoints.length - MAX_MEMORY_POINTS);
+        }
+
         if (workingPoints.length > tripPointsRef.current.length) {
           tripPointsRef.current = workingPoints;
           setTripPoints([...workingPoints]);
@@ -256,9 +263,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       if (appStateRef.current.match(/inactive|background/) && nextState === 'active') {
-        try {
-          await ensureValidSession();
-        } catch (e) {}
         if (activeTripRef.current) {
           await syncBackgroundPoints();
           refreshDayRecord();
@@ -274,7 +278,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isCheckedIn && dayRecord.activeTrip) {
-      timerRef.current = setInterval(() => {
+      const computeMinutes = () => {
         const start = new Date(dayRecord.activeTrip!.startTime).getTime();
         const baseMinutes = dayRecord.trips
           .filter(t => t.endTime)
@@ -283,36 +287,55 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }, 0);
         const activeMinutes = Math.floor((Date.now() - start) / 60000);
         setWorkingMinutes(baseMinutes + activeMinutes);
-      }, 30000);
+      };
 
-      const start = new Date(dayRecord.activeTrip.startTime).getTime();
-      const baseMinutes = dayRecord.trips
-        .filter(t => t.endTime)
-        .reduce((sum, t) => {
-          return sum + Math.floor((new Date(t.endTime!).getTime() - new Date(t.startTime).getTime()) / 60000);
-        }, 0);
-      setWorkingMinutes(baseMinutes + Math.floor((Date.now() - start) / 60000));
+      computeMinutes();
+      timerRef.current = setInterval(computeMinutes, 30000);
     } else {
       setWorkingMinutes(dayRecord.totalWorkingMinutes);
     }
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
     };
   }, [isCheckedIn, dayRecord.activeTrip, dayRecord.trips, dayRecord.totalWorkingMinutes]);
 
   const addTripPoint = useCallback((point: LocationPoint) => {
     if (!shouldAcceptPoint(point, tripPointsRef.current)) return;
     tripPointsRef.current.push(point);
-    setTripPoints(prev => [...prev, point]);
+    if (tripPointsRef.current.length > MAX_MEMORY_POINTS) {
+      tripPointsRef.current = tripPointsRef.current.slice(-MAX_MEMORY_POINTS);
+    }
+    tripPointsDirtyRef.current = true;
   }, [shouldAcceptPoint]);
 
+  const flushTripPointsToState = useCallback(() => {
+    if (tripPointsDirtyRef.current) {
+      tripPointsDirtyRef.current = false;
+      setTripPoints([...tripPointsRef.current]);
+    }
+  }, []);
+
   const startLocationTracking = useCallback(async () => {
+    if (locationSubRef.current) {
+      locationSubRef.current.remove();
+      locationSubRef.current = null;
+    }
+    if (stateUpdateTimerRef.current) {
+      clearInterval(stateUpdateTimerRef.current);
+      stateUpdateTimerRef.current = null;
+    }
+
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         console.warn('Location permission not granted for tracking');
         return;
       }
+
+      stateUpdateTimerRef.current = setInterval(flushTripPointsToState, STATE_UPDATE_INTERVAL);
 
       if (Platform.OS === 'web') {
         const webTrack = setInterval(async () => {
@@ -365,7 +388,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     } catch (e: any) {
       console.error('Location tracking error:', e.message);
     }
-  }, [addTripPoint, persistTripPoints]);
+  }, [addTripPoint, persistTripPoints, flushTripPointsToState]);
 
   const stopLocationTracking = useCallback(async () => {
     if (locationSubRef.current) {
@@ -376,6 +399,11 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     if (backupTimerRef.current) {
       clearInterval(backupTimerRef.current);
       backupTimerRef.current = null;
+    }
+
+    if (stateUpdateTimerRef.current) {
+      clearInterval(stateUpdateTimerRef.current);
+      stateUpdateTimerRef.current = null;
     }
 
     if (bgTrackingActiveRef.current) {
@@ -420,8 +448,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const performCheckIn = useCallback(async (): Promise<boolean> => {
     try {
-      try { await ensureValidSession(); } catch (e) {}
-
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Location Required', 'Please enable location permissions in your device settings to check in.');
@@ -451,6 +477,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
       tripPointsRef.current = [point];
       setTripPoints([point]);
+      tripPointsDirtyRef.current = false;
 
       await clearBackgroundPoints();
       await clearTripPointsBackup();
@@ -483,6 +510,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   const cleanupLocalTripState = useCallback(async () => {
     tripPointsRef.current = [];
     setTripPoints([]);
+    tripPointsDirtyRef.current = false;
     activeTripRef.current = null;
     try { await clearBackgroundPoints(); } catch (e) {}
     try { await clearActiveTripId(); } catch (e) {}
@@ -491,8 +519,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const performCheckOut = useCallback(async () => {
     try {
-      try { await ensureValidSession(); } catch (e) {}
-
       await stopLocationTracking();
 
       await syncBackgroundPoints();

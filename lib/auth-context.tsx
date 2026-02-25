@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase, setCachedUserId, refreshSessionNow } from './supabase';
+import { supabase, setCachedUserId } from './supabase';
 import { clearCachedAuthUserId } from './storage';
 import type { UserProfile } from './types';
 
 const PROFILE_CACHE_KEY = 'cached_user_profile';
+const LOGIN_TIMEOUT = 15000;
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -101,13 +102,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else if (cached) {
           setCachedUserId(cached.id);
           setUser(cached);
-
-          supabase.auth.refreshSession().then(({ data: { session: refreshed } }) => {
-            if (refreshed?.user) {
-              setCachedUserId(refreshed.user.id);
-              loadProfile(refreshed.user.id, refreshed.user.email || '');
-            }
-          }).catch(() => {});
         }
       } catch (e) {
         console.error('Auth init error:', e);
@@ -121,9 +115,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+      if (event === 'SIGNED_IN' && session?.user) {
         setCachedUserId(session.user.id);
         await loadProfile(session.user.id, session.user.email || '');
+      } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+        setCachedUserId(session.user.id);
       } else if (event === 'SIGNED_OUT') {
         setCachedUserId(null);
         clearCachedAuthUserId();
@@ -137,7 +133,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      let timeoutHandle: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Login timed out. Please check your internet connection and try again.')), LOGIN_TIMEOUT);
+      });
+
+      const loginPromise = supabase.auth.signInWithPassword({ email, password });
+
+      const { data, error } = await Promise.race([loginPromise, timeoutPromise]);
+      clearTimeout(timeoutHandle!);
+
       if (error) return { success: false, message: error.message };
       if (data.user) {
         setCachedUserId(data.user.id);
@@ -151,11 +156,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = async (email: string, password: string, name: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      const { data, error } = await supabase.auth.signUp({
+      let timeoutHandle: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Registration timed out. Please check your internet connection and try again.')), LOGIN_TIMEOUT);
+      });
+
+      const signUpPromise = supabase.auth.signUp({
         email,
         password,
         options: { data: { name } },
       });
+
+      const { data, error } = await Promise.race([signUpPromise, timeoutPromise]);
+      clearTimeout(timeoutHandle!);
+
       if (error) return { success: false, message: error.message };
       if (data.user) {
         setCachedUserId(data.user.id);

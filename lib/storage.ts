@@ -481,7 +481,6 @@ async function getOrCreateDayRecord(userId: string, date: string): Promise<any> 
 export async function getDayRecord(date?: string): Promise<DayRecord> {
   const d = date || new Date().toISOString().split('T')[0];
   try {
-    await ensureValidSession();
     const userId = await getAuthUserId();
     const dayRecord = await getOrCreateDayRecord(userId, d);
 
@@ -750,12 +749,16 @@ export async function saveRoutePoints(tripId: string, points: LocationPoint[]): 
       timestamp: Math.round(p.timestamp),
     }));
 
-    const batchSize = 50;
+    const batchSize = 500;
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
-      const { error } = await supabase.from('route_points').insert(batch);
-      if (error) {
-        console.error('Save route points batch error:', error.message);
+      try {
+        const { error } = await supabase.from('route_points').insert(batch);
+        if (error) {
+          console.error('Save route points batch error:', error.message);
+        }
+      } catch (e: any) {
+        console.warn('Route points batch insert failed:', e.message);
       }
     }
   } catch (e: any) {
