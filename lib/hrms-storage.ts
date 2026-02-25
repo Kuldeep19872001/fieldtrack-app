@@ -1,4 +1,4 @@
-import { supabase, getCachedUserId } from './supabase';
+import { supabase, ensureValidSession, withSessionRetry } from './supabase';
 
 export interface UserShift {
   userId: string;
@@ -45,8 +45,8 @@ export interface MonthlySummary {
   totalWorkingDays: number;
 }
 
-function getUserId(): string {
-  const uid = getCachedUserId();
+async function getUserId(): Promise<string> {
+  const uid = await ensureValidSession();
   if (!uid) throw new Error('Not authenticated');
   return uid;
 }
@@ -65,7 +65,7 @@ function countDays(from: string, to: string): number {
 }
 
 export async function getUserShift(): Promise<UserShift | null> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const { data, error } = await supabase
     .from('user_shifts')
     .select('*')
@@ -84,7 +84,7 @@ export async function ensureUserShift(): Promise<UserShift> {
   const existing = await getUserShift();
   if (existing) return existing;
 
-  const userId = getUserId();
+  const userId = await getUserId();
   const { data, error } = await supabase
     .from('user_shifts')
     .upsert({
@@ -104,7 +104,7 @@ export async function ensureUserShift(): Promise<UserShift> {
 }
 
 export async function updateUserShift(shiftStart: string, shiftEnd: string): Promise<void> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const { error } = await supabase
     .from('user_shifts')
     .upsert({
@@ -118,7 +118,7 @@ export async function updateUserShift(shiftStart: string, shiftEnd: string): Pro
 }
 
 export async function getLeaveBalances(year?: number): Promise<LeaveBalance[]> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const currentYear = year || new Date().getFullYear();
 
   const { data, error } = await supabase
@@ -154,7 +154,7 @@ function mapBalance(row: any): LeaveBalance {
 }
 
 async function ensureLeaveBalances(year: number): Promise<void> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const defaults = [
     { leave_type: 'CL', total_days: 12 },
     { leave_type: 'PL', total_days: 15 },
@@ -178,7 +178,7 @@ async function ensureLeaveBalances(year: number): Promise<void> {
 }
 
 export async function getLeaveRequests(): Promise<LeaveRequest[]> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const { data, error } = await supabase
     .from('leave_requests')
     .select('*')
@@ -210,7 +210,7 @@ export async function applyLeave(
   toDate: string,
   reason: string
 ): Promise<string> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const days = countDays(fromDate, toDate);
 
   const { data: overlapping } = await supabase
@@ -251,7 +251,7 @@ export async function applyLeave(
 }
 
 export async function cancelLeaveRequest(requestId: string): Promise<void> {
-  const userId = getUserId();
+  const userId = await getUserId();
 
   const { data: req } = await supabase
     .from('leave_requests')
@@ -335,7 +335,7 @@ export async function approveLeaveRequest(requestId: string, approverEmail: stri
 }
 
 export async function getTodayAttendance(): Promise<AttendanceRecord> {
-  const userId = getUserId();
+  const userId = await getUserId();
   const today = new Date().toISOString().split('T')[0];
 
   const { data: leaves } = await supabase
@@ -416,7 +416,7 @@ export async function getTodayAttendance(): Promise<AttendanceRecord> {
 }
 
 export async function getMonthlyAttendance(year: number, month: number): Promise<MonthlySummary> {
-  const userId = getUserId();
+  const userId = await getUserId();
 
   const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
   const lastDay = new Date(year, month, 0).getDate();

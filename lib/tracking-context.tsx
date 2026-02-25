@@ -6,6 +6,7 @@ import {
   addVisit, addCallLog, addActivity,
   getLeadById, saveLead, calculateDistance, saveRoutePoints,
 } from './storage';
+import { ensureValidSession } from './supabase';
 import { snapToRoads } from './roads-api';
 import { encodePolyline } from './polyline';
 import {
@@ -255,6 +256,9 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (nextState: AppStateStatus) => {
       if (appStateRef.current.match(/inactive|background/) && nextState === 'active') {
+        try {
+          await ensureValidSession();
+        } catch (e) {}
         if (activeTripRef.current) {
           await syncBackgroundPoints();
           refreshDayRecord();
@@ -416,6 +420,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   const performCheckIn = useCallback(async (): Promise<boolean> => {
     try {
+      try { await ensureValidSession(); } catch (e) {}
+
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Location Required', 'Please enable location permissions in your device settings to check in.');
@@ -474,8 +480,19 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     }
   }, [getLocationWithFallback, refreshDayRecord]);
 
+  const cleanupLocalTripState = useCallback(async () => {
+    tripPointsRef.current = [];
+    setTripPoints([]);
+    activeTripRef.current = null;
+    try { await clearBackgroundPoints(); } catch (e) {}
+    try { await clearActiveTripId(); } catch (e) {}
+    try { await clearTripPointsBackup(); } catch (e) {}
+  }, []);
+
   const performCheckOut = useCallback(async () => {
     try {
+      try { await ensureValidSession(); } catch (e) {}
+
       await stopLocationTracking();
 
       await syncBackgroundPoints();
@@ -558,22 +575,25 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         snappedPolyline = encodePolyline(cleanedPoints);
       }
 
-      await endTrip(activeTrip.id, cleanedPoints, endLocation, snappedPolyline, snappedDistance);
+      try {
+        await endTrip(activeTrip.id, cleanedPoints, endLocation, snappedPolyline, snappedDistance);
+      } catch (e: any) {
+        console.error('endTrip server call failed:', e.message);
+        await cleanupLocalTripState();
+        await refreshDayRecord();
+        Alert.alert('Check-out Partial', 'Your trip was ended locally but server sync may have failed. The data will sync next time you open the app.');
+        return;
+      }
 
-      tripPointsRef.current = [];
-      setTripPoints([]);
-      activeTripRef.current = null;
-
-      await clearBackgroundPoints();
-      await clearActiveTripId();
-      await clearTripPointsBackup();
-
+      await cleanupLocalTripState();
       await refreshDayRecord();
     } catch (e: any) {
       console.error('Check-out error:', e.message);
-      Alert.alert('Check-out Error', e.message || 'Could not complete check-out.');
+      await cleanupLocalTripState();
+      try { await refreshDayRecord(); } catch (re) {}
+      Alert.alert('Check-out Error', e.message || 'Could not complete check-out. Trip has been ended locally.');
     }
-  }, [stopLocationTracking, syncBackgroundPoints, getLocationWithFallback, refreshDayRecord]);
+  }, [stopLocationTracking, syncBackgroundPoints, getLocationWithFallback, refreshDayRecord, cleanupLocalTripState]);
 
   const logVisit = useCallback(async (leadId: string, leadName: string, type: Visit['type'], notes: string, address: string) => {
     let lat = currentLocation?.latitude || 0;

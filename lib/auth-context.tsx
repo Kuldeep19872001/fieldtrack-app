@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase, setCachedUserId } from './supabase';
+import { supabase, setCachedUserId, refreshSessionNow } from './supabase';
 import { clearCachedAuthUserId } from './storage';
 import type { UserProfile } from './types';
 
