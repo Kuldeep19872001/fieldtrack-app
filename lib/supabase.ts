@@ -2,11 +2,37 @@ import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, AppStateStatus } from 'react-native';
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://kzyggcacgnyoglkgmvrt.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_OEWJgEeAD3sjVlQ2IOMLwQ_SJ36sxag';
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error('MISSING SUPABASE CONFIG: EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY not set');
+const FETCH_TIMEOUT = 30000;
+const MAX_RETRIES = 2;
+const RETRY_DELAYS = [1000, 3000];
+
+async function customFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+
+      const response = await fetch(input, {
+        ...init,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < MAX_RETRIES) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]));
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -15,6 +41,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
+  },
+  global: {
+    fetch: customFetch,
   },
 });
 
@@ -30,44 +59,11 @@ export function getCachedUserId(): string | null {
   return _cachedUserId;
 }
 
-export async function ensureValidSession(): Promise<string | null> {
-  if (_cachedUserId) {
-    return _cachedUserId;
-  }
-
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      _cachedUserId = session.user.id;
-      return _cachedUserId;
-    }
-    return null;
-  } catch (e: any) {
-    console.error('ensureValidSession error:', e.message);
-    return _cachedUserId;
-  }
-}
-
-function isAuthError(error: any): boolean {
-  if (!error) return false;
-  const msg = (error.message || '').toLowerCase();
-  const code = error.code || '';
-  return (
-    code === 'PGRST301' ||
-    msg.includes('jwt expired') ||
-    msg.includes('invalid claim') ||
-    msg.includes('session_not_found') ||
-    msg.includes('refresh_token_not_found') ||
-    msg.includes('not authenticated')
-  );
-}
-
 export async function refreshSessionNow(): Promise<boolean> {
   const now = Date.now();
   if ((now - _lastRefreshTime) < MIN_REFRESH_INTERVAL) {
     return !!_cachedUserId;
   }
-
   try {
     _lastRefreshTime = now;
     const { data, error } = await supabase.auth.refreshSession();
@@ -80,41 +76,6 @@ export async function refreshSessionNow(): Promise<boolean> {
   } catch (e: any) {
     console.error('refreshSessionNow error:', e.message);
     return false;
-  }
-}
-
-const OP_TIMEOUT = 30000;
-
-export async function withSessionRetry<T>(operation: () => Promise<T>): Promise<T> {
-  let timeoutHandle: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => reject(new Error('Operation timed out. Please check your internet connection and try again.')), OP_TIMEOUT);
-  });
-
-  try {
-    const result = await Promise.race([operation(), timeoutPromise]);
-    clearTimeout(timeoutHandle!);
-    return result;
-  } catch (firstError: any) {
-    clearTimeout(timeoutHandle!);
-    if (isAuthError(firstError)) {
-      const refreshed = await refreshSessionNow();
-      if (refreshed) {
-        let retryTimeoutHandle: ReturnType<typeof setTimeout>;
-        const retryTimeout = new Promise<never>((_, reject) => {
-          retryTimeoutHandle = setTimeout(() => reject(new Error('Operation timed out on retry.')), OP_TIMEOUT);
-        });
-        try {
-          const result = await Promise.race([operation(), retryTimeout]);
-          clearTimeout(retryTimeoutHandle!);
-          return result;
-        } catch (retryError: any) {
-          clearTimeout(retryTimeoutHandle!);
-          throw retryError;
-        }
-      }
-    }
-    throw firstError;
   }
 }
 

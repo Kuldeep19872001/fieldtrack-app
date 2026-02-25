@@ -15,6 +15,7 @@ import {
   saveTripPointsBackup, getTripPointsBackup, clearTripPointsBackup,
   isBackgroundTrackingActive,
 } from './background-tracking';
+import { useAuth } from './auth-context';
 import type { DayRecord, LocationPoint, Visit, CallLog, Activity, LeadStage, Trip } from './types';
 
 const MIN_DISTANCE_METERS = 15;
@@ -107,6 +108,7 @@ const emptyDayRecord: DayRecord = {
 const TrackingContext = createContext<TrackingContextValue | null>(null);
 
 export function TrackingProvider({ children }: { children: ReactNode }) {
+  const { isAuthenticated, user } = useAuth();
   const [dayRecord, setDayRecord] = useState<DayRecord>(emptyDayRecord);
   const [currentLocation, setCurrentLocation] = useState<LocationPoint | null>(null);
   const [workingMinutes, setWorkingMinutes] = useState(0);
@@ -114,12 +116,10 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stateUpdateTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeTripRef = useRef<Trip | null>(null);
   const tripPointsRef = useRef<LocationPoint[]>([]);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const bgTrackingActiveRef = useRef(false);
-  const tripPointsDirtyRef = useRef(false);
 
   const isCheckedIn = !!dayRecord.activeTrip;
   const isTracking = isCheckedIn;
@@ -163,12 +163,21 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!isAuthenticated || !user?.id) {
+      setDayRecord(emptyDayRecord);
+      setCurrentLocation(null);
+      setWorkingMinutes(0);
+      setTripPoints([]);
+      tripPointsRef.current = [];
+      activeTripRef.current = null;
+      return;
+    }
     const init = async () => {
       await refreshDayRecord();
       await restoreTripPoints();
     };
     init();
-  }, [refreshDayRecord, restoreTripPoints]);
+  }, [isAuthenticated, user?.id, refreshDayRecord, restoreTripPoints]);
 
   const persistTripPoints = useCallback(async () => {
     if (Platform.OS === 'web') return;
@@ -243,10 +252,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (workingPoints.length > MAX_MEMORY_POINTS) {
-          workingPoints.splice(0, workingPoints.length - MAX_MEMORY_POINTS);
-        }
-
         if (workingPoints.length > tripPointsRef.current.length) {
           tripPointsRef.current = workingPoints;
           setTripPoints([...workingPoints]);
@@ -278,7 +283,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isCheckedIn && dayRecord.activeTrip) {
-      const computeMinutes = () => {
+      timerRef.current = setInterval(() => {
         const start = new Date(dayRecord.activeTrip!.startTime).getTime();
         const baseMinutes = dayRecord.trips
           .filter(t => t.endTime)
@@ -287,20 +292,24 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           }, 0);
         const activeMinutes = Math.floor((Date.now() - start) / 60000);
         setWorkingMinutes(baseMinutes + activeMinutes);
-      };
+      }, 30000);
 
-      computeMinutes();
-      timerRef.current = setInterval(computeMinutes, 30000);
+      const start = new Date(dayRecord.activeTrip.startTime).getTime();
+      const baseMinutes = dayRecord.trips
+        .filter(t => t.endTime)
+        .reduce((sum, t) => {
+          return sum + Math.floor((new Date(t.endTime!).getTime() - new Date(t.startTime).getTime()) / 60000);
+        }, 0);
+      setWorkingMinutes(baseMinutes + Math.floor((Date.now() - start) / 60000));
     } else {
       setWorkingMinutes(dayRecord.totalWorkingMinutes);
     }
     return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+      if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [isCheckedIn, dayRecord.activeTrip, dayRecord.trips, dayRecord.totalWorkingMinutes]);
+
+  const lastStateUpdateRef = useRef<number>(0);
 
   const addTripPoint = useCallback((point: LocationPoint) => {
     if (!shouldAcceptPoint(point, tripPointsRef.current)) return;
@@ -308,34 +317,20 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     if (tripPointsRef.current.length > MAX_MEMORY_POINTS) {
       tripPointsRef.current = tripPointsRef.current.slice(-MAX_MEMORY_POINTS);
     }
-    tripPointsDirtyRef.current = true;
-  }, [shouldAcceptPoint]);
-
-  const flushTripPointsToState = useCallback(() => {
-    if (tripPointsDirtyRef.current) {
-      tripPointsDirtyRef.current = false;
+    const now = Date.now();
+    if (now - lastStateUpdateRef.current >= STATE_UPDATE_INTERVAL) {
+      lastStateUpdateRef.current = now;
       setTripPoints([...tripPointsRef.current]);
     }
-  }, []);
+  }, [shouldAcceptPoint]);
 
   const startLocationTracking = useCallback(async () => {
-    if (locationSubRef.current) {
-      locationSubRef.current.remove();
-      locationSubRef.current = null;
-    }
-    if (stateUpdateTimerRef.current) {
-      clearInterval(stateUpdateTimerRef.current);
-      stateUpdateTimerRef.current = null;
-    }
-
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
         console.warn('Location permission not granted for tracking');
         return;
       }
-
-      stateUpdateTimerRef.current = setInterval(flushTripPointsToState, STATE_UPDATE_INTERVAL);
 
       if (Platform.OS === 'web') {
         const webTrack = setInterval(async () => {
@@ -388,7 +383,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     } catch (e: any) {
       console.error('Location tracking error:', e.message);
     }
-  }, [addTripPoint, persistTripPoints, flushTripPointsToState]);
+  }, [addTripPoint, persistTripPoints]);
 
   const stopLocationTracking = useCallback(async () => {
     if (locationSubRef.current) {
@@ -399,11 +394,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     if (backupTimerRef.current) {
       clearInterval(backupTimerRef.current);
       backupTimerRef.current = null;
-    }
-
-    if (stateUpdateTimerRef.current) {
-      clearInterval(stateUpdateTimerRef.current);
-      stateUpdateTimerRef.current = null;
     }
 
     if (bgTrackingActiveRef.current) {
@@ -477,7 +467,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
 
       tripPointsRef.current = [point];
       setTripPoints([point]);
-      tripPointsDirtyRef.current = false;
 
       await clearBackgroundPoints();
       await clearTripPointsBackup();
@@ -506,16 +495,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       return false;
     }
   }, [getLocationWithFallback, refreshDayRecord]);
-
-  const cleanupLocalTripState = useCallback(async () => {
-    tripPointsRef.current = [];
-    setTripPoints([]);
-    tripPointsDirtyRef.current = false;
-    activeTripRef.current = null;
-    try { await clearBackgroundPoints(); } catch (e) {}
-    try { await clearActiveTripId(); } catch (e) {}
-    try { await clearTripPointsBackup(); } catch (e) {}
-  }, []);
 
   const performCheckOut = useCallback(async () => {
     try {
@@ -601,25 +580,22 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         snappedPolyline = encodePolyline(cleanedPoints);
       }
 
-      try {
-        await endTrip(activeTrip.id, cleanedPoints, endLocation, snappedPolyline, snappedDistance);
-      } catch (e: any) {
-        console.error('endTrip server call failed:', e.message);
-        await cleanupLocalTripState();
-        await refreshDayRecord();
-        Alert.alert('Check-out Partial', 'Your trip was ended locally but server sync may have failed. The data will sync next time you open the app.');
-        return;
-      }
+      await endTrip(activeTrip.id, cleanedPoints, endLocation, snappedPolyline, snappedDistance);
 
-      await cleanupLocalTripState();
+      tripPointsRef.current = [];
+      setTripPoints([]);
+      activeTripRef.current = null;
+
+      await clearBackgroundPoints();
+      await clearActiveTripId();
+      await clearTripPointsBackup();
+
       await refreshDayRecord();
     } catch (e: any) {
       console.error('Check-out error:', e.message);
-      await cleanupLocalTripState();
-      try { await refreshDayRecord(); } catch (re) {}
-      Alert.alert('Check-out Error', e.message || 'Could not complete check-out. Trip has been ended locally.');
+      Alert.alert('Check-out Error', e.message || 'Could not complete check-out.');
     }
-  }, [stopLocationTracking, syncBackgroundPoints, getLocationWithFallback, refreshDayRecord, cleanupLocalTripState]);
+  }, [stopLocationTracking, syncBackgroundPoints, getLocationWithFallback, refreshDayRecord]);
 
   const logVisit = useCallback(async (leadId: string, leadName: string, type: Visit['type'], notes: string, address: string) => {
     let lat = currentLocation?.latitude || 0;

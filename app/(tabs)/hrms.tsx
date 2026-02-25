@@ -13,7 +13,7 @@ import {
 } from '@/lib/hrms-storage';
 
 const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL
-  || (process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : 'http://localhost:5000');
+  || (process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : 'https://fieldtrack.replit.app');
 
 const LEAVE_TYPES = ['CL', 'PL', 'SL', 'RH', 'LWP'];
 const LEAVE_LABELS: Record<string, string> = {

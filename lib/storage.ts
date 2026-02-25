@@ -1,14 +1,40 @@
-import { supabase, ensureValidSession, withSessionRetry } from './supabase';
+import { supabase, getCachedUserId } from './supabase';
 import { encodePolyline } from './polyline';
 import type { Lead, Trip, LocationPoint, Visit, CallLog, Activity, DayRecord } from './types';
 
+let _cachedAuthUserId: string | null = null;
+
 async function getAuthUserId(): Promise<string> {
-  const userId = await ensureValidSession();
-  if (userId) return userId;
+  if (_cachedAuthUserId) return _cachedAuthUserId;
+  
+  const cached = getCachedUserId();
+  if (cached) {
+    _cachedAuthUserId = cached;
+    return cached;
+  }
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (session?.user) {
+    _cachedAuthUserId = session.user.id;
+    return session.user.id;
+  }
+
+  try {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (user) {
+      _cachedAuthUserId = user.id;
+      return user.id;
+    }
+    if (userError) console.error('getUser error:', userError.message);
+  } catch (e: any) {
+    console.error('getUser exception:', e.message);
+  }
+
   throw new Error('Please sign in again to continue');
 }
 
 export function clearCachedAuthUserId() {
+  _cachedAuthUserId = null;
 }
 
 export async function getLeadTypes(): Promise<string[]> {
@@ -40,19 +66,17 @@ export async function addLeadType(type: string): Promise<string[]> {
 
 export async function getLeads(): Promise<Lead[]> {
   try {
-    return await withSessionRetry(async () => {
-      const userId = await getAuthUserId();
-      const { data, error } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-      if (error) {
-        console.error('Get leads error:', error.message, error.details, error.hint);
-        throw new Error('Failed to load leads: ' + error.message);
-      }
-      return (data || []).map(transformLead);
-    });
+    const userId = await getAuthUserId();
+    const { data, error } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Get leads error:', error.message, error.details, error.hint);
+      throw new Error('Failed to load leads: ' + error.message);
+    }
+    return (data || []).map(transformLead);
   } catch (e: any) {
     console.error('Get leads exception:', e.message);
     return [];
@@ -83,35 +107,33 @@ function transformLead(row: any): Lead {
 }
 
 export async function saveLead(lead: Lead): Promise<void> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const { error } = await supabase
-      .from('leads')
-      .update({
-        name: lead.name,
-        company: lead.company,
-        area: lead.area,
-        phone: lead.phone,
-        email: lead.email,
-        stage: lead.stage,
-        notes: lead.notes,
-        source: lead.source,
-        address: lead.address,
-        mobile: lead.mobile,
-        lead_type: lead.leadType,
-        assigned_staff: lead.assignedStaff,
-        last_visit_date: lead.lastVisitDate,
-        location_lat: lead.locationLat,
-        location_lng: lead.locationLng,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', lead.id)
-      .eq('user_id', userId);
-    if (error) {
-      console.error('Save lead error:', error.message, error.details);
-      throw new Error('Failed to save lead: ' + error.message);
-    }
-  });
+  const userId = await getAuthUserId();
+  const { error } = await supabase
+    .from('leads')
+    .update({
+      name: lead.name,
+      company: lead.company,
+      area: lead.area,
+      phone: lead.phone,
+      email: lead.email,
+      stage: lead.stage,
+      notes: lead.notes,
+      source: lead.source,
+      address: lead.address,
+      mobile: lead.mobile,
+      lead_type: lead.leadType,
+      assigned_staff: lead.assignedStaff,
+      last_visit_date: lead.lastVisitDate,
+      location_lat: lead.locationLat,
+      location_lng: lead.locationLng,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', lead.id)
+    .eq('user_id', userId);
+  if (error) {
+    console.error('Save lead error:', error.message, error.details);
+    throw new Error('Failed to save lead: ' + error.message);
+  }
 }
 
 export async function createLead(data: {
@@ -124,32 +146,30 @@ export async function createLead(data: {
   locationLng: number | null;
   assignedStaff: string;
 }): Promise<Lead> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const insertData = {
-      user_id: userId,
-      name: data.name,
-      source: data.source || '',
-      address: data.address || '',
-      mobile: data.mobile,
-      lead_type: data.leadType || '',
-      location_lat: data.locationLat,
-      location_lng: data.locationLng,
-      assigned_staff: data.assignedStaff || 'Self',
-      stage: 'New' as const,
-    };
-    const { data: row, error } = await supabase
-      .from('leads')
-      .insert(insertData)
-      .select()
-      .single();
-    if (error) {
-      console.error('Create lead Supabase error:', JSON.stringify(error));
-      throw new Error(error.message || 'Failed to create lead');
-    }
-    if (!row) throw new Error('No data returned after creating lead');
-    return transformLead(row);
-  });
+  const userId = await getAuthUserId();
+  const insertData = {
+    user_id: userId,
+    name: data.name,
+    source: data.source || '',
+    address: data.address || '',
+    mobile: data.mobile,
+    lead_type: data.leadType || '',
+    location_lat: data.locationLat,
+    location_lng: data.locationLng,
+    assigned_staff: data.assignedStaff || 'Self',
+    stage: 'New' as const,
+  };
+  const { data: row, error } = await supabase
+    .from('leads')
+    .insert(insertData)
+    .select()
+    .single();
+  if (error) {
+    console.error('Create lead Supabase error:', JSON.stringify(error));
+    throw new Error(error.message || 'Failed to create lead');
+  }
+  if (!row) throw new Error('No data returned after creating lead');
+  return transformLead(row);
 }
 
 export async function createLeadsBatch(leadsData: Array<{
@@ -162,30 +182,28 @@ export async function createLeadsBatch(leadsData: Array<{
   locationLng: number | null;
   assignedStaff: string;
 }>): Promise<Lead[]> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const rows = leadsData.map(data => ({
-      user_id: userId,
-      name: data.name,
-      source: data.source || '',
-      address: data.address || '',
-      mobile: data.mobile || '',
-      lead_type: data.leadType || '',
-      location_lat: data.locationLat,
-      location_lng: data.locationLng,
-      assigned_staff: data.assignedStaff || 'Self',
-      stage: 'New' as const,
-    }));
-    const { data: result, error } = await supabase
-      .from('leads')
-      .insert(rows)
-      .select();
-    if (error) {
-      console.error('Batch insert error:', JSON.stringify(error));
-      throw new Error(error.message || 'Failed to import leads');
-    }
-    return (result || []).map(transformLead);
-  });
+  const userId = await getAuthUserId();
+  const rows = leadsData.map(data => ({
+    user_id: userId,
+    name: data.name,
+    source: data.source || '',
+    address: data.address || '',
+    mobile: data.mobile || '',
+    lead_type: data.leadType || '',
+    location_lat: data.locationLat,
+    location_lng: data.locationLng,
+    assigned_staff: data.assignedStaff || 'Self',
+    stage: 'New' as const,
+  }));
+  const { data: result, error } = await supabase
+    .from('leads')
+    .insert(rows)
+    .select();
+  if (error) {
+    console.error('Batch insert error:', JSON.stringify(error));
+    throw new Error(error.message || 'Failed to import leads');
+  }
+  return (result || []).map(transformLead);
 }
 
 export async function getLeadById(id: string): Promise<Lead | undefined> {
@@ -224,50 +242,48 @@ function transformTrip(row: any): Trip {
 }
 
 export async function startTrip(location: LocationPoint): Promise<Trip> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const today = new Date().toISOString().split('T')[0];
-    const now = new Date().toISOString();
+  const userId = await getAuthUserId();
+  const today = new Date().toISOString().split('T')[0];
+  const now = new Date().toISOString();
 
-    const { data: row, error } = await supabase
-      .from('trips')
-      .insert({
-        user_id: userId,
-        date: today,
-        start_time: now,
-        start_lat: location.latitude,
-        start_lng: location.longitude,
-      })
-      .select()
-      .single();
+  const { data: row, error } = await supabase
+    .from('trips')
+    .insert({
+      user_id: userId,
+      date: today,
+      start_time: now,
+      start_lat: location.latitude,
+      start_lng: location.longitude,
+    })
+    .select()
+    .single();
 
-    if (error) {
-      console.error('Start trip error:', error.message, error.details);
-      throw new Error('Failed to start trip: ' + error.message);
+  if (error) {
+    console.error('Start trip error:', error.message, error.details);
+    throw new Error('Failed to start trip: ' + error.message);
+  }
+
+  try {
+    const dayRecord = await getOrCreateDayRecord(userId, today);
+    const updateData: any = {};
+    if (!dayRecord.check_in_time) {
+      updateData.check_in_time = now;
+      updateData.check_in_lat = location.latitude;
+      updateData.check_in_lng = location.longitude;
+      updateData.check_in_timestamp = Math.round(location.timestamp);
     }
+    updateData.trip_count = (dayRecord.trip_count || 0) + 1;
+    updateData.status = 'Present';
 
-    try {
-      const dayRecord = await getOrCreateDayRecord(userId, today);
-      const updateData: any = {};
-      if (!dayRecord.check_in_time) {
-        updateData.check_in_time = now;
-        updateData.check_in_lat = location.latitude;
-        updateData.check_in_lng = location.longitude;
-        updateData.check_in_timestamp = Math.round(location.timestamp);
-      }
-      updateData.trip_count = (dayRecord.trip_count || 0) + 1;
-      updateData.status = 'Present';
+    await supabase
+      .from('day_records')
+      .update(updateData)
+      .eq('id', dayRecord.id);
+  } catch (e: any) {
+    console.warn('Update day record on check-in failed:', e.message);
+  }
 
-      await supabase
-        .from('day_records')
-        .update(updateData)
-        .eq('id', dayRecord.id);
-    } catch (e: any) {
-      console.warn('Update day record on check-in failed:', e.message);
-    }
-
-    return transformTrip(row);
-  });
+  return transformTrip(row);
 }
 
 export async function endTrip(
@@ -277,123 +293,119 @@ export async function endTrip(
   snappedPolyline?: string | null,
   snappedDistance?: number | null
 ): Promise<Trip> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const encodedPoly = snappedPolyline || (points.length >= 2 ? encodePolyline(points) : null);
-    const totalDist = snappedDistance != null ? snappedDistance : calculateTotalDistance(points);
-    const now = new Date().toISOString();
+  const userId = await getAuthUserId();
+  const encodedPoly = snappedPolyline || (points.length >= 2 ? encodePolyline(points) : null);
+  const totalDist = snappedDistance != null ? snappedDistance : calculateTotalDistance(points);
+  const now = new Date().toISOString();
 
-    const { data: row, error } = await supabase
+  const { data: row, error } = await supabase
+    .from('trips')
+    .update({
+      end_time: now,
+      end_lat: endLocation.latitude,
+      end_lng: endLocation.longitude,
+      encoded_polyline: encodedPoly,
+      total_distance: totalDist,
+      point_count: points.length,
+    })
+    .eq('id', tripId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('End trip error:', error.message, error.details);
+    throw new Error('Failed to end trip: ' + error.message);
+  }
+
+  try {
+    const today = row.date || new Date().toISOString().split('T')[0];
+    const dayRecord = await getOrCreateDayRecord(userId, today);
+
+    const { data: allTrips } = await supabase
       .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('date', today);
+
+    const trips = allTrips || [];
+    let dayTotalDistance = 0;
+    let dayWorkingMinutes = 0;
+
+    for (const t of trips) {
+      dayTotalDistance += t.total_distance || 0;
+      if (t.start_time && t.end_time) {
+        const start = new Date(t.start_time).getTime();
+        const end = new Date(t.end_time).getTime();
+        dayWorkingMinutes += Math.floor((end - start) / 60000);
+      }
+    }
+
+    const { data: visitsData } = await supabase
+      .from('visits')
+      .select('id')
+      .eq('day_record_id', dayRecord.id);
+
+    const { data: callsData } = await supabase
+      .from('calls')
+      .select('id')
+      .eq('day_record_id', dayRecord.id);
+
+    let status = 'Absent';
+    if (dayWorkingMinutes >= 480) status = 'Present';
+    else if (dayWorkingMinutes >= 180) status = 'Half Day';
+    else if (dayWorkingMinutes > 0) status = 'Absent';
+
+    const { data: leaveReqs } = await supabase
+      .from('leave_requests')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'Approved')
+      .lte('from_date', today)
+      .gte('to_date', today)
+      .limit(1);
+
+    if (leaveReqs && leaveReqs.length > 0) {
+      status = 'Leave';
+    }
+
+    await supabase
+      .from('day_records')
       .update({
-        end_time: now,
-        end_lat: endLocation.latitude,
-        end_lng: endLocation.longitude,
-        encoded_polyline: encodedPoly,
-        total_distance: totalDist,
-        point_count: points.length,
+        check_out_time: now,
+        check_out_lat: endLocation.latitude,
+        check_out_lng: endLocation.longitude,
+        total_distance: dayTotalDistance,
+        working_minutes: dayWorkingMinutes,
+        trip_count: trips.length,
+        visit_count: visitsData?.length || 0,
+        call_count: callsData?.length || 0,
+        status,
       })
-      .eq('id', tripId)
-      .select()
-      .single();
+      .eq('id', dayRecord.id);
+  } catch (e: any) {
+    console.warn('Update day record on check-out failed:', e.message);
+  }
 
-    if (error) {
-      console.error('End trip error:', error.message, error.details);
-      throw new Error('Failed to end trip: ' + error.message);
-    }
-
-    try {
-      const today = row.date || new Date().toISOString().split('T')[0];
-      const dayRecord = await getOrCreateDayRecord(userId, today);
-
-      const { data: allTrips } = await supabase
-        .from('trips')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('date', today);
-
-      const trips = allTrips || [];
-      let dayTotalDistance = 0;
-      let dayWorkingMinutes = 0;
-
-      for (const t of trips) {
-        dayTotalDistance += t.total_distance || 0;
-        if (t.start_time && t.end_time) {
-          const start = new Date(t.start_time).getTime();
-          const end = new Date(t.end_time).getTime();
-          dayWorkingMinutes += Math.floor((end - start) / 60000);
-        }
-      }
-
-      const { data: visitsData } = await supabase
-        .from('visits')
-        .select('id')
-        .eq('day_record_id', dayRecord.id);
-
-      const { data: callsData } = await supabase
-        .from('calls')
-        .select('id')
-        .eq('day_record_id', dayRecord.id);
-
-      let status = 'Absent';
-      if (dayWorkingMinutes >= 480) status = 'Present';
-      else if (dayWorkingMinutes >= 180) status = 'Half Day';
-      else if (dayWorkingMinutes > 0) status = 'Absent';
-
-      const { data: leaveReqs } = await supabase
-        .from('leave_requests')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'Approved')
-        .lte('from_date', today)
-        .gte('to_date', today)
-        .limit(1);
-
-      if (leaveReqs && leaveReqs.length > 0) {
-        status = 'Leave';
-      }
-
-      await supabase
-        .from('day_records')
-        .update({
-          check_out_time: now,
-          check_out_lat: endLocation.latitude,
-          check_out_lng: endLocation.longitude,
-          total_distance: dayTotalDistance,
-          working_minutes: dayWorkingMinutes,
-          trip_count: trips.length,
-          visit_count: visitsData?.length || 0,
-          call_count: callsData?.length || 0,
-          status,
-        })
-        .eq('id', dayRecord.id);
-    } catch (e: any) {
-      console.warn('Update day record on check-out failed:', e.message);
-    }
-
-    return transformTrip(row);
-  });
+  return transformTrip(row);
 }
 
 export async function getActiveTrip(): Promise<Trip | null> {
   try {
-    return await withSessionRetry(async () => {
-      const userId = await getAuthUserId();
-      const { data, error } = await supabase
-        .from('trips')
-        .select('*')
-        .eq('user_id', userId)
-        .is('end_time', null)
-        .order('start_time', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+    const userId = await getAuthUserId();
+    const { data, error } = await supabase
+      .from('trips')
+      .select('*')
+      .eq('user_id', userId)
+      .is('end_time', null)
+      .order('start_time', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-      if (error) {
-        console.error('Get active trip error:', error.message);
-        throw error;
-      }
-      return data ? transformTrip(data) : null;
-    });
+    if (error) {
+      console.error('Get active trip error:', error.message);
+      return null;
+    }
+    return data ? transformTrip(data) : null;
   } catch (e: any) {
     console.error('Get active trip exception:', e.message);
     return null;
@@ -560,49 +572,47 @@ export async function getDayRecord(date?: string): Promise<DayRecord> {
 }
 
 export async function addVisit(visit: Omit<Visit, 'id'>, tripId?: string): Promise<Visit> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const today = new Date().toISOString().split('T')[0];
-    const dayRecord = await getOrCreateDayRecord(userId, today);
+  const userId = await getAuthUserId();
+  const today = new Date().toISOString().split('T')[0];
+  const dayRecord = await getOrCreateDayRecord(userId, today);
 
-    const insertData: any = {
-      day_record_id: dayRecord.id,
-      lead_id: visit.leadId,
-      lead_name: visit.leadName,
-      type: visit.type,
-      latitude: visit.latitude,
-      longitude: visit.longitude,
-      address: visit.address || '',
-      notes: visit.notes || '',
-      duration: visit.duration || 0,
-    };
-    if (tripId) insertData.trip_id = tripId;
+  const insertData: any = {
+    day_record_id: dayRecord.id,
+    lead_id: visit.leadId,
+    lead_name: visit.leadName,
+    type: visit.type,
+    latitude: visit.latitude,
+    longitude: visit.longitude,
+    address: visit.address || '',
+    notes: visit.notes || '',
+    duration: visit.duration || 0,
+  };
+  if (tripId) insertData.trip_id = tripId;
 
-    const { data: row, error } = await supabase
-      .from('visits')
-      .insert(insertData)
-      .select()
-      .single();
+  const { data: row, error } = await supabase
+    .from('visits')
+    .insert(insertData)
+    .select()
+    .single();
 
-    if (error) {
-      console.error('Add visit error:', error.message, error.details);
-      throw new Error('Failed to add visit: ' + error.message);
-    }
+  if (error) {
+    console.error('Add visit error:', error.message, error.details);
+    throw new Error('Failed to add visit: ' + error.message);
+  }
 
-    return {
-      id: row.id,
-      leadId: row.lead_id,
-      leadName: row.lead_name,
-      type: row.type,
-      latitude: row.latitude,
-      longitude: row.longitude,
-      address: row.address,
-      notes: row.notes,
-      timestamp: row.timestamp,
-      duration: row.duration,
-      tripId: row.trip_id,
-    };
-  });
+  return {
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name,
+    type: row.type,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    address: row.address,
+    notes: row.notes,
+    timestamp: row.timestamp,
+    duration: row.duration,
+    tripId: row.trip_id,
+  };
 }
 
 export async function getVisitsForLead(leadId: string): Promise<Visit[]> {
@@ -639,39 +649,37 @@ export async function getVisitsForLead(leadId: string): Promise<Visit[]> {
 }
 
 export async function addCallLog(call: Omit<CallLog, 'id'>): Promise<CallLog> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const today = new Date().toISOString().split('T')[0];
-    const dayRecord = await getOrCreateDayRecord(userId, today);
+  const userId = await getAuthUserId();
+  const today = new Date().toISOString().split('T')[0];
+  const dayRecord = await getOrCreateDayRecord(userId, today);
 
-    const { data: row, error } = await supabase
-      .from('calls')
-      .insert({
-        day_record_id: dayRecord.id,
-        lead_id: call.leadId,
-        lead_name: call.leadName,
-        type: call.type,
-        duration: call.duration || 0,
-        notes: call.notes || '',
-      })
-      .select()
-      .single();
+  const { data: row, error } = await supabase
+    .from('calls')
+    .insert({
+      day_record_id: dayRecord.id,
+      lead_id: call.leadId,
+      lead_name: call.leadName,
+      type: call.type,
+      duration: call.duration || 0,
+      notes: call.notes || '',
+    })
+    .select()
+    .single();
 
-    if (error) {
-      console.error('Add call error:', error.message, error.details);
-      throw new Error('Failed to log call: ' + error.message);
-    }
+  if (error) {
+    console.error('Add call error:', error.message, error.details);
+    throw new Error('Failed to log call: ' + error.message);
+  }
 
-    return {
-      id: row.id,
-      leadId: row.lead_id,
-      leadName: row.lead_name,
-      type: row.type,
-      duration: row.duration,
-      notes: row.notes,
-      timestamp: row.timestamp,
-    };
-  });
+  return {
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name,
+    type: row.type,
+    duration: row.duration,
+    notes: row.notes,
+    timestamp: row.timestamp,
+  };
 }
 
 export async function getCallsForLead(leadId: string): Promise<CallLog[]> {
@@ -702,37 +710,35 @@ export async function getCallsForLead(leadId: string): Promise<CallLog[]> {
 }
 
 export async function addActivity(activity: Omit<Activity, 'id'>): Promise<Activity> {
-  return withSessionRetry(async () => {
-    const userId = await getAuthUserId();
-    const today = new Date().toISOString().split('T')[0];
-    const dayRecord = await getOrCreateDayRecord(userId, today);
+  const userId = await getAuthUserId();
+  const today = new Date().toISOString().split('T')[0];
+  const dayRecord = await getOrCreateDayRecord(userId, today);
 
-    const { data: row, error } = await supabase
-      .from('activities')
-      .insert({
-        day_record_id: dayRecord.id,
-        lead_id: activity.leadId,
-        lead_name: activity.leadName,
-        type: activity.type,
-        description: activity.description || '',
-      })
-      .select()
-      .single();
+  const { data: row, error } = await supabase
+    .from('activities')
+    .insert({
+      day_record_id: dayRecord.id,
+      lead_id: activity.leadId,
+      lead_name: activity.leadName,
+      type: activity.type,
+      description: activity.description || '',
+    })
+    .select()
+    .single();
 
-    if (error) {
-      console.error('Add activity error:', error.message, error.details);
-      throw new Error('Failed to log activity: ' + error.message);
-    }
+  if (error) {
+    console.error('Add activity error:', error.message, error.details);
+    throw new Error('Failed to log activity: ' + error.message);
+  }
 
-    return {
-      id: row.id,
-      leadId: row.lead_id,
-      leadName: row.lead_name,
-      type: row.type,
-      description: row.description,
-      timestamp: row.timestamp,
-    };
-  });
+  return {
+    id: row.id,
+    leadId: row.lead_id,
+    leadName: row.lead_name,
+    type: row.type,
+    description: row.description,
+    timestamp: row.timestamp,
+  };
 }
 
 export async function saveRoutePoints(tripId: string, points: LocationPoint[]): Promise<void> {
@@ -752,13 +758,9 @@ export async function saveRoutePoints(tripId: string, points: LocationPoint[]): 
     const batchSize = 500;
     for (let i = 0; i < rows.length; i += batchSize) {
       const batch = rows.slice(i, i + batchSize);
-      try {
-        const { error } = await supabase.from('route_points').insert(batch);
-        if (error) {
-          console.error('Save route points batch error:', error.message);
-        }
-      } catch (e: any) {
-        console.warn('Route points batch insert failed:', e.message);
+      const { error } = await supabase.from('route_points').insert(batch);
+      if (error) {
+        console.error('Save route points batch error:', error.message);
       }
     }
   } catch (e: any) {

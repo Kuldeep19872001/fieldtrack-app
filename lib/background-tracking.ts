@@ -160,11 +160,8 @@ export async function clearActiveTripId(): Promise<void> {
 
 export async function saveTripPointsBackup(points: BGLocationPoint[]): Promise<void> {
   try {
-    let toSave = points;
-    if (toSave.length > MAX_BACKUP_POINTS) {
-      toSave = toSave.slice(-MAX_BACKUP_POINTS);
-    }
-    await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(toSave));
+    const capped = points.length > MAX_BACKUP_POINTS ? points.slice(-MAX_BACKUP_POINTS) : points;
+    await AsyncStorage.setItem(TRIP_POINTS_KEY, JSON.stringify(capped));
   } catch (e) {
     console.error('Failed to save trip points backup:', e);
   }

@@ -1,11 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase, setCachedUserId } from './supabase';
 import { clearCachedAuthUserId } from './storage';
 import type { UserProfile } from './types';
 
 const PROFILE_CACHE_KEY = 'cached_user_profile';
-const LOGIN_TIMEOUT = 15000;
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -48,6 +47,7 @@ async function clearCachedProfile(): Promise<void> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const profileLoadedRef = useRef(false);
 
   const loadProfile = async (userId: string, email: string): Promise<UserProfile> => {
     setCachedUserId(userId);
@@ -87,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (async () => {
       const cached = await getCachedProfile();
 
-      const authTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+      const authTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 15000));
 
       try {
         const sessionResult = await Promise.race([
@@ -98,10 +98,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (sessionResult && sessionResult.data?.session?.user) {
           const session = sessionResult.data.session;
           setCachedUserId(session.user.id);
+          profileLoadedRef.current = true;
           await loadProfile(session.user.id, session.user.email || '');
         } else if (cached) {
           setCachedUserId(cached.id);
           setUser(cached);
+
+          supabase.auth.refreshSession().then(({ data: { session: refreshed } }) => {
+            if (refreshed?.user) {
+              setCachedUserId(refreshed.user.id);
+              loadProfile(refreshed.user.id, refreshed.user.email || '');
+            }
+          }).catch(() => {});
         }
       } catch (e) {
         console.error('Auth init error:', e);
@@ -117,7 +125,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
         setCachedUserId(session.user.id);
-        await loadProfile(session.user.id, session.user.email || '');
+        if (!profileLoadedRef.current) {
+          await loadProfile(session.user.id, session.user.email || '');
+        }
+        profileLoadedRef.current = false;
       } else if (event === 'TOKEN_REFRESHED' && session?.user) {
         setCachedUserId(session.user.id);
       } else if (event === 'SIGNED_OUT') {
@@ -133,43 +144,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      let timeoutHandle: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error('Login timed out. Please check your internet connection and try again.')), LOGIN_TIMEOUT);
-      });
-
-      const loginPromise = supabase.auth.signInWithPassword({ email, password });
-
-      const { data, error } = await Promise.race([loginPromise, timeoutPromise]);
-      clearTimeout(timeoutHandle!);
-
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) return { success: false, message: error.message };
       if (data.user) {
         setCachedUserId(data.user.id);
+        profileLoadedRef.current = true;
         await loadProfile(data.user.id, data.user.email || '');
       }
       return { success: true };
     } catch (e: any) {
-      return { success: false, message: e.message || 'Login failed' };
+      const msg = e.message || '';
+      if (msg.includes('Network') || msg.includes('fetch') || msg.includes('abort') || msg.includes('timeout')) {
+        return { success: false, message: 'Unable to connect. Please check your internet connection and try again.' };
+      }
+      return { success: false, message: msg || 'Login failed. Please try again.' };
     }
   };
 
   const register = async (email: string, password: string, name: string): Promise<{ success: boolean; message?: string }> => {
     try {
-      let timeoutHandle: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error('Registration timed out. Please check your internet connection and try again.')), LOGIN_TIMEOUT);
-      });
-
-      const signUpPromise = supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: { data: { name } },
       });
-
-      const { data, error } = await Promise.race([signUpPromise, timeoutPromise]);
-      clearTimeout(timeoutHandle!);
-
       if (error) return { success: false, message: error.message };
       if (data.user) {
         setCachedUserId(data.user.id);
@@ -182,11 +180,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           console.warn('Profile upsert after register failed:', e);
         }
+        profileLoadedRef.current = true;
         await loadProfile(data.user.id, data.user.email || '');
       }
       return { success: true };
     } catch (e: any) {
-      return { success: false, message: e.message || 'Registration failed' };
+      const msg = e.message || '';
+      if (msg.includes('Network') || msg.includes('fetch') || msg.includes('abort') || msg.includes('timeout')) {
+        return { success: false, message: 'Unable to connect. Please check your internet connection and try again.' };
+      }
+      return { success: false, message: msg || 'Registration failed. Please try again.' };
     }
   };
 

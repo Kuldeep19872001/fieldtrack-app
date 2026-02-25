@@ -1,6 +1,6 @@
 import type { LocationPoint } from './types';
 
-const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+const GOOGLE_MAPS_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyBsnV9XWBDuZxJQVDO5t-qZFqOSmdNX6vI';
 const SNAP_TO_ROADS_URL = 'https://roads.googleapis.com/v1/snapToRoads';
 const MAX_POINTS_PER_REQUEST = 100;
 const MAX_GAP_KM = 0.5;
@@ -26,21 +26,6 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function downsamplePoints(points: LocationPoint[], maxPoints: number): LocationPoint[] {
-  if (points.length <= maxPoints) return points;
-
-  const result: LocationPoint[] = [points[0]];
-  const step = (points.length - 1) / (maxPoints - 1);
-
-  for (let i = 1; i < maxPoints - 1; i++) {
-    const idx = Math.round(i * step);
-    result.push(points[idx]);
-  }
-
-  result.push(points[points.length - 1]);
-  return result;
-}
-
 function splitAtGaps(points: LocationPoint[]): LocationPoint[][] {
   if (points.length < 2) return [points];
   const segments: LocationPoint[][] = [];
@@ -59,6 +44,17 @@ function splitAtGaps(points: LocationPoint[]): LocationPoint[][] {
   return segments;
 }
 
+function downsamplePoints(points: LocationPoint[], maxCount: number): LocationPoint[] {
+  if (points.length <= maxCount) return points;
+  const result: LocationPoint[] = [points[0]];
+  const step = (points.length - 1) / (maxCount - 1);
+  for (let i = 1; i < maxCount - 1; i++) {
+    result.push(points[Math.round(i * step)]);
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
+
 export async function snapToRoads(
   points: LocationPoint[]
 ): Promise<Array<{ latitude: number; longitude: number }>> {
@@ -71,75 +67,55 @@ export async function snapToRoads(
     return points.map(p => ({ latitude: p.latitude, longitude: p.longitude }));
   }
 
-  const startTime = Date.now();
+  const sampledPoints = downsamplePoints(points, MAX_POINTS_FOR_API);
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Roads API total timeout')), TOTAL_SNAP_TIMEOUT)
+  );
 
   try {
-    const sampled = downsamplePoints(points, MAX_POINTS_FOR_API);
-    const gapSegments = splitAtGaps(sampled);
-    const allSnapped: Array<{ latitude: number; longitude: number }> = [];
+    const snapPromise = (async () => {
+      const gapSegments = splitAtGaps(sampledPoints);
+      const allSnapped: Array<{ latitude: number; longitude: number }> = [];
 
-    for (const segment of gapSegments) {
-      if (Date.now() - startTime > TOTAL_SNAP_TIMEOUT) {
-        console.warn('Snap-to-roads total timeout reached, using raw GPS for remaining segments');
-        for (const p of segment) {
-          allSnapped.push({ latitude: p.latitude, longitude: p.longitude });
+      for (const segment of gapSegments) {
+        if (segment.length < 2) {
+          allSnapped.push({ latitude: segment[0].latitude, longitude: segment[0].longitude });
+          continue;
         }
-        continue;
+
+        const segmentSnapped = await snapSegment(segment);
+        allSnapped.push(...segmentSnapped);
       }
 
-      if (segment.length < 2) {
-        allSnapped.push({ latitude: segment[0].latitude, longitude: segment[0].longitude });
-        continue;
+      if (allSnapped.length < 2) {
+        return points.map(p => ({ latitude: p.latitude, longitude: p.longitude }));
       }
 
-      const segmentSnapped = await snapSegment(segment, startTime);
-      allSnapped.push(...segmentSnapped);
-    }
+      return removeDuplicateConsecutive(allSnapped);
+    })();
 
-    if (allSnapped.length < 2) {
-      return points.map(p => ({ latitude: p.latitude, longitude: p.longitude }));
-    }
-
-    return removeDuplicateConsecutive(allSnapped);
+    return await Promise.race([snapPromise, timeoutPromise]);
   } catch (e: any) {
-    console.error('Snap to roads failed:', e.message);
+    console.warn('Snap to roads failed, using raw GPS:', e.message);
     return points.map(p => ({ latitude: p.latitude, longitude: p.longitude }));
   }
 }
 
 async function snapSegment(
-  points: LocationPoint[],
-  globalStartTime: number
+  points: LocationPoint[]
 ): Promise<Array<{ latitude: number; longitude: number }>> {
   const result: Array<{ latitude: number; longitude: number }> = [];
   const chunks = chunkPoints(points, MAX_POINTS_PER_REQUEST);
 
   for (const chunk of chunks) {
-    if (Date.now() - globalStartTime > TOTAL_SNAP_TIMEOUT) {
-      console.warn('Snap-to-roads timeout in segment, falling back to raw for remaining chunks');
-      chunk.forEach(p => result.push({ latitude: p.latitude, longitude: p.longitude }));
-      continue;
-    }
-
     const pathStr = chunk
       .map(p => `${p.latitude},${p.longitude}`)
       .join('|');
 
     const url = `${SNAP_TO_ROADS_URL}?path=${encodeURIComponent(pathStr)}&interpolate=true&key=${GOOGLE_MAPS_API_KEY}`;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-    let response: Response;
-    try {
-      response = await fetch(url, { signal: controller.signal });
-    } catch (fetchErr: any) {
-      clearTimeout(timeoutId);
-      console.warn('Snap-to-roads fetch failed for chunk, using raw:', fetchErr.message);
-      chunk.forEach(p => result.push({ latitude: p.latitude, longitude: p.longitude }));
-      continue;
-    } finally {
-      clearTimeout(timeoutId);
-    }
+    const response = await fetch(url);
 
     if (!response.ok) {
       const errText = await response.text();
